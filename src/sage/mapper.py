@@ -182,6 +182,21 @@ class MappingEngine:
         """Render once at the raw seam shared by growth, loss, and evaluation."""
         return self.renderer(model, frame)
 
+    def _target_rgb(
+        self, frame: FrameInputs, cache: dict[int, torch.Tensor],
+    ) -> torch.Tensor:
+        """GPU-resident RGB, cached per frame index for the run's lifetime.
+
+        Optimization views are resampled with replacement across iterations and
+        commits, so without caching the same image gets re-uploaded from numpy
+        every time it's picked.
+        """
+        tensor = cache.get(frame.index)
+        if tensor is None:
+            tensor = torch.as_tensor(frame.rgb, dtype=torch.float32, device=self.device)
+            cache[frame.index] = tensor
+        return tensor
+
     @staticmethod
     def _optimizer_step(optimizer: torch.optim.Optimizer) -> int:
         steps = {
@@ -215,6 +230,7 @@ class MappingEngine:
         optimizer_prune_migrations = 0
         keyframes: list[int] = []
         keyframe_by_index: dict[int, FrameInputs] = {}
+        rgb_cache: dict[int, torch.Tensor] = {}
         commits: list[MappingCommit] = []
         actual_spnet_invocations = 0
         spnet_inference_seconds: list[float] = []
@@ -326,7 +342,7 @@ class MappingEngine:
                     selected_frame = frame if selected_index == frame.index else keyframe_by_index[selected_index]
                     optimizer.zero_grad(set_to_none=True)
                     output = self._render(model, selected_frame)
-                    target_rgb = torch.as_tensor(selected_frame.rgb, dtype=torch.float32, device=self.device)
+                    target_rgb = self._target_rgb(selected_frame, rgb_cache)
                     loss, terms = mapping_loss(
                         output.rgb,
                         target_rgb,
@@ -368,9 +384,7 @@ class MappingEngine:
                     raise RuntimeError("Mapping commit completed without a final loss")
                 with torch.no_grad():
                     final_output = self._render(model, frame)
-                    final_target_rgb = torch.as_tensor(
-                        frame.rgb, dtype=torch.float32, device=self.device,
-                    )
+                    final_target_rgb = self._target_rgb(frame, rgb_cache)
                     _, final_terms = mapping_loss(
                         final_output.rgb,
                         final_target_rgb,
@@ -394,7 +408,7 @@ class MappingEngine:
                     with torch.no_grad():
                         quality = self.metric_evaluator(
                             final_output.rgb,
-                            torch.as_tensor(frame.rgb, dtype=torch.float32, device=self.device),
+                            self._target_rgb(frame, rgb_cache),
                         )
                 if self.device.type == "cuda":
                     torch.cuda.synchronize(self.device)
