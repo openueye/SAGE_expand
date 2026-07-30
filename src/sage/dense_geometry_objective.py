@@ -10,24 +10,64 @@ from .dense_geometry_config import DenseGeometryPolicy, DensePriorPolicy
 from .losses import alpha_normalized_depth
 
 
+_CAMERA_RAYS: dict[
+    tuple[str, torch.dtype, int, int, float, float, float, float],
+    tuple[torch.Tensor, torch.Tensor],
+] = {}
+
+
+def _camera_rays(
+    depth: torch.Tensor,
+    intrinsics: CameraIntrinsics,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    height, width = depth.shape
+    key = (
+        str(depth.device),
+        depth.dtype,
+        height,
+        width,
+        float(intrinsics.fx),
+        float(intrinsics.fy),
+        float(intrinsics.cx),
+        float(intrinsics.cy),
+    )
+    rays = _CAMERA_RAYS.get(key)
+    if rays is None:
+        rows, columns = torch.meshgrid(
+            torch.arange(height, dtype=depth.dtype, device=depth.device),
+            torch.arange(width, dtype=depth.dtype, device=depth.device),
+            indexing="ij",
+        )
+        rays = (
+            (columns - intrinsics.cx) / intrinsics.fx,
+            (rows - intrinsics.cy) / intrinsics.fy,
+        )
+        _CAMERA_RAYS[key] = rays
+    return rays
+
+
 def _camera_points(
     depth: torch.Tensor,
     intrinsics: CameraIntrinsics,
 ) -> torch.Tensor:
-    height, width = depth.shape
-    rows, columns = torch.meshgrid(
-        torch.arange(height, dtype=depth.dtype, device=depth.device),
-        torch.arange(width, dtype=depth.dtype, device=depth.device),
-        indexing="ij",
-    )
+    x_ray, y_ray = _camera_rays(depth, intrinsics)
     return torch.stack(
         (
-            (columns - intrinsics.cx) * depth / intrinsics.fx,
-            (rows - intrinsics.cy) * depth / intrinsics.fy,
+            x_ray * depth,
+            y_ray * depth,
             depth,
         ),
         dim=2,
     )
+
+
+def _zero(reference: torch.Tensor) -> torch.Tensor:
+    safe = torch.where(
+        torch.isfinite(reference),
+        reference,
+        torch.zeros_like(reference),
+    )
+    return safe.sum() * 0
 
 
 def _depth_normals(
@@ -153,6 +193,47 @@ def dense_prior_support_counts(
     return int(prior_valid.sum()), int(target_valid.sum())
 
 
+def prepare_dense_geometry_static(
+    prior: DenseGeometryPrior,
+    rgb: torch.Tensor,
+    intrinsics: CameraIntrinsics,
+    prior_policy: DensePriorPolicy,
+    geometry: DenseGeometryPolicy,
+) -> dict[str, torch.Tensor | tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
+    """Materialize target-only dense-normal terms once per input frame."""
+    target_depth = torch.as_tensor(
+        prior.aligned_depth_m,
+        dtype=rgb.dtype,
+        device=rgb.device,
+    )
+    weights = torch.as_tensor(
+        prior.confidence,
+        dtype=rgb.dtype,
+        device=rgb.device,
+    ).pow(prior_policy.confidence_exponent)
+    prior_valid = torch.as_tensor(
+        prior.valid_mask,
+        dtype=torch.bool,
+        device=rgb.device,
+    )
+    target_normals, target_valid = _depth_normals(
+        target_depth,
+        prior_valid,
+        intrinsics,
+        max_relative_depth_jump=geometry.max_relative_depth_jump,
+    )
+    edge = edge_weights(rgb, geometry.edge_weight_gamma)
+    return {
+        "target_depth": target_depth,
+        "weights": weights,
+        "prior_valid": prior_valid,
+        "target_normals": target_normals,
+        "target_valid": target_valid,
+        "edge_weights": edge,
+        "normal_weights": _stencil_minimum(weights) * edge[0],
+    }
+
+
 def dense_geometry_objective(
     rendered_depth: torch.Tensor,
     rendered_alpha: torch.Tensor,
@@ -161,6 +242,13 @@ def dense_geometry_objective(
     intrinsics: CameraIntrinsics,
     prior_policy: DensePriorPolicy,
     geometry: DenseGeometryPolicy,
+    static: (
+        dict[
+            str,
+            torch.Tensor | tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+        ]
+        | None
+    ) = None,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     """Return robust dense depth, normal alignment, and edge-aware normal smoothness."""
     expected = (intrinsics.height, intrinsics.width)
@@ -168,21 +256,31 @@ def dense_geometry_objective(
         raise ValueError("Dense geometry render dimensions must match intrinsics")
     if prior.aligned_depth_m.shape != expected or rgb.shape != (*expected, 3):
         raise ValueError("Dense geometry prior and RGB dimensions must match intrinsics")
-    target_depth = torch.as_tensor(
-        prior.aligned_depth_m,
-        dtype=rendered_depth.dtype,
-        device=rendered_depth.device,
-    )
-    weights = torch.as_tensor(
-        prior.confidence,
-        dtype=rendered_depth.dtype,
-        device=rendered_depth.device,
-    ).pow(prior_policy.confidence_exponent)
-    prior_valid = torch.as_tensor(
-        prior.valid_mask,
-        dtype=torch.bool,
-        device=rendered_depth.device,
-    )
+    if static is None:
+        target_depth = torch.as_tensor(
+            prior.aligned_depth_m,
+            dtype=rendered_depth.dtype,
+            device=rendered_depth.device,
+        )
+        weights = torch.as_tensor(
+            prior.confidence,
+            dtype=rendered_depth.dtype,
+            device=rendered_depth.device,
+        ).pow(prior_policy.confidence_exponent)
+        prior_valid = torch.as_tensor(
+            prior.valid_mask,
+            dtype=torch.bool,
+            device=rendered_depth.device,
+        )
+    else:
+        target_depth = static["target_depth"]
+        weights = static["weights"]
+        prior_valid = static["prior_valid"]
+        if not all(
+            isinstance(value, torch.Tensor)
+            for value in (target_depth, weights, prior_valid)
+        ):
+            raise ValueError("Dense geometry static cache is invalid")
     predicted = alpha_normalized_depth(rendered_depth, rendered_alpha)
     valid = (
         prior_valid
@@ -192,25 +290,59 @@ def dense_geometry_objective(
         & torch.isfinite(rendered_alpha)
         & (rendered_alpha.detach() >= geometry.alpha_support_a0)
     )
-    residual = torch.sqrt((predicted - target_depth).square() + prior_policy.robust_epsilon_m ** 2) - prior_policy.robust_epsilon_m
     mass = torch.where(valid, weights, torch.zeros_like(weights)).sum()
-    depth = (torch.where(valid, residual * weights, torch.zeros_like(residual)).sum() / mass.clamp_min(1))
+    if geometry.dense_depth_weight:
+        residual = (
+            torch.sqrt(
+                (predicted - target_depth).square()
+                + prior_policy.robust_epsilon_m**2
+            )
+            - prior_policy.robust_epsilon_m
+        )
+        depth = (
+            torch.where(
+                valid,
+                residual * weights,
+                torch.zeros_like(residual),
+            ).sum()
+            / mass.clamp_min(1)
+        )
+    else:
+        depth = _zero(predicted)
     predicted_normals, predicted_valid = _depth_normals(
         predicted,
         valid,
         intrinsics,
         max_relative_depth_jump=geometry.max_relative_depth_jump,
     )
-    target_normals, target_valid = _depth_normals(
-        target_depth,
-        prior_valid,
-        intrinsics,
-        max_relative_depth_jump=geometry.max_relative_depth_jump,
-    )
+    if static is None:
+        target_normals, target_valid = _depth_normals(
+            target_depth,
+            prior_valid,
+            intrinsics,
+            max_relative_depth_jump=geometry.max_relative_depth_jump,
+        )
+        center, horizontal, vertical = edge_weights(
+            rgb,
+            geometry.edge_weight_gamma,
+        )
+        normal_weights = _stencil_minimum(weights) * center
+    else:
+        target_normals = static["target_normals"]
+        target_valid = static["target_valid"]
+        edge = static["edge_weights"]
+        normal_weights = static["normal_weights"]
+        if (
+            not isinstance(target_normals, torch.Tensor)
+            or not isinstance(target_valid, torch.Tensor)
+            or not isinstance(normal_weights, torch.Tensor)
+            or not isinstance(edge, tuple)
+            or len(edge) != 3
+        ):
+            raise ValueError("Dense geometry static cache is invalid")
+        center, horizontal, vertical = edge
     normal_valid = predicted_valid & target_valid
     normal_values = 1 - (predicted_normals * target_normals).sum(dim=2).clamp(-1, 1)
-    center, horizontal, vertical = edge_weights(rgb, geometry.edge_weight_gamma)
-    normal_weights = _stencil_minimum(weights) * center
     normal_mass = torch.where(normal_valid, normal_weights, torch.zeros_like(normal_weights)).sum()
     normal = (
         torch.where(
@@ -220,11 +352,29 @@ def dense_geometry_objective(
         ).sum()
         / normal_mass.clamp_min(1)
     )
-    horizontal_valid = predicted_valid[:, 1:] & predicted_valid[:, :-1]
-    vertical_valid = predicted_valid[1:, :] & predicted_valid[:-1, :]
-    horizontal_values = 1 - (predicted_normals[:, 1:] * predicted_normals[:, :-1]).sum(dim=2).clamp(-1, 1)
-    vertical_values = 1 - (predicted_normals[1:] * predicted_normals[:-1]).sum(dim=2).clamp(-1, 1)
-    smooth = (torch.where(horizontal_valid, horizontal_values * horizontal, torch.zeros_like(horizontal_values)).sum() + torch.where(vertical_valid, vertical_values * vertical, torch.zeros_like(vertical_values)).sum()) / (horizontal_valid.sum() + vertical_valid.sum()).clamp_min(1)
+    if geometry.normal_smoothness_weight:
+        horizontal_valid = predicted_valid[:, 1:] & predicted_valid[:, :-1]
+        vertical_valid = predicted_valid[1:, :] & predicted_valid[:-1, :]
+        horizontal_values = 1 - (
+            predicted_normals[:, 1:] * predicted_normals[:, :-1]
+        ).sum(dim=2).clamp(-1, 1)
+        vertical_values = 1 - (
+            predicted_normals[1:] * predicted_normals[:-1]
+        ).sum(dim=2).clamp(-1, 1)
+        smooth = (
+            torch.where(
+                horizontal_valid,
+                horizontal_values * horizontal,
+                torch.zeros_like(horizontal_values),
+            ).sum()
+            + torch.where(
+                vertical_valid,
+                vertical_values * vertical,
+                torch.zeros_like(vertical_values),
+            ).sum()
+        ) / (horizontal_valid.sum() + vertical_valid.sum()).clamp_min(1)
+    else:
+        smooth = _zero(predicted)
     total = geometry.dense_depth_weight * depth + geometry.dense_normal_weight * normal + geometry.normal_smoothness_weight * smooth
     return total, {
         "total": total,

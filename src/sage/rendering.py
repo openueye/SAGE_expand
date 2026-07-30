@@ -20,7 +20,7 @@ from .model import TrainableGaussians
 
 
 RENDERER_PROVENANCE_COMMIT = "cb65e4b86bc3bd8ed42174b72a62e8d3a3a71110"
-RENDERER_SOURCE_TREE_SHA256 = "6a2380890c9d110e4f597fec76fabfe781a375da94f5b569a7e1c9bd9c32b4ec"
+RENDERER_SOURCE_TREE_SHA256 = "ab438bd57dfd311f47d503739f0694622887be5a1be5c05399706c65c0b3f145"
 RENDERER_ADAPTER_SCHEMA = "sage-renderer-adapter-v1"
 RENDERER_BUILD_MANIFEST_SCHEMA = "sage-renderer-build-v1"
 RENDERER_BUILD_MANIFEST_NAME = "sage_build_identity.json"
@@ -45,7 +45,7 @@ RENDERER_COMPILE_FLAGS = (
     "_GLIBCXX_USE_CXX11_ABI=0",
 )
 RENDERER_REBUILD_COMMAND = (
-    "env -u PYTHONPATH PYTHONNOUSERSITE=1 conda run -n sage "
+    "env PYTHONNOUSERSITE=1 PYTHONPATH=src conda run -n sage "
     "python tools/build_renderer.py"
 )
 
@@ -62,6 +62,17 @@ class RenderOutput:
     def accumulated_depth(self) -> torch.Tensor:
         """Return the unnormalized accumulated depth for new callers."""
         return self.depth
+
+
+@dataclass(frozen=True)
+class RenderStaticFields:
+    """Geometry-only renderer inputs reused during appearance optimization."""
+
+    backend: object
+    means3d: torch.Tensor
+    scales: torch.Tensor
+    rotations: torch.Tensor
+    background: torch.Tensor
 
 
 class Renderer(Protocol):
@@ -399,17 +410,60 @@ def _camera_matrices(
     return world_to_view, (world_to_view @ projection).contiguous(), center
 
 
-def render(model: TrainableGaussians, frame: FrameInputs) -> RenderOutput:
+def prepare_render_static(model: TrainableGaussians) -> RenderStaticFields:
+    """Prepare fields that stay frozen throughout appearance refinement."""
+    if model.means3d.device.type != "cuda":
+        raise RuntimeError(
+            "Repository renderer requires CUDA; CPU rendering is not supported"
+        )
+    device = model.means3d.device
+    with torch.no_grad():
+        means3d = model.means3d.detach().contiguous()
+        scales = model.scales.detach().contiguous()
+        rotations = F.normalize(
+            model.rotations.detach(),
+            dim=1,
+        ).contiguous()
+    return RenderStaticFields(
+        backend=_load_renderer_extension(),
+        means3d=means3d,
+        scales=scales,
+        rotations=rotations,
+        background=torch.zeros(3, dtype=torch.float32, device=device),
+    )
+
+
+def render(
+    model: TrainableGaussians,
+    frame: FrameInputs,
+    *,
+    static: RenderStaticFields | None = None,
+) -> RenderOutput:
     if model.means3d.device.type != "cuda":
         raise RuntimeError("Repository renderer requires CUDA; CPU rendering is not supported")
-    backend = _load_renderer_extension()
     device = model.means3d.device
+    if static is None:
+        backend = _load_renderer_extension()
+        means3d = model.means3d.contiguous()
+        scales = model.scales.contiguous()
+        rotations = F.normalize(model.rotations, dim=1).contiguous()
+        background = torch.zeros(3, dtype=torch.float32, device=device)
+    else:
+        if static.means3d.device != device:
+            raise ValueError(
+                "Static renderer fields must share the model device"
+            )
+        backend = static.backend
+        means3d = static.means3d
+        scales = static.scales
+        rotations = static.rotations
+        background = static.background
     view, projection, center = _camera_matrices(frame, device)
     settings_values = {
         "image_height": frame.intrinsics.height, "image_width": frame.intrinsics.width,
         "tanfovx": frame.intrinsics.width / (2 * frame.intrinsics.fx),
         "tanfovy": frame.intrinsics.height / (2 * frame.intrinsics.fy),
-        "bg": torch.zeros(3, dtype=torch.float32, device=device), "scale_modifier": 1.0,
+        "bg": background, "scale_modifier": 1.0,
         "viewmatrix": view, "projmatrix": projection, "sh_degree": 0, "campos": center,
         "prefiltered": False,
     }
@@ -420,20 +474,37 @@ def render(model: TrainableGaussians, frame: FrameInputs) -> RenderOutput:
         settings_values["antialiasing"] = False
     settings = backend.GaussianRasterizationSettings(**settings_values)
     rasterizer = backend.GaussianRasterizer(settings)
-    means2d = torch.zeros_like(model.means3d, requires_grad=True)
-    rotations = F.normalize(model.rotations, dim=1).contiguous()
-    rgb, _, _ = rasterizer(
-        means3D=model.means3d.contiguous(), means2D=means2d,
-        colors_precomp=model.colors.contiguous(), opacities=model.opacities.contiguous(),
-        scales=model.scales.contiguous(), rotations=rotations,
+    means2d = torch.zeros_like(
+        means3d,
+        requires_grad=torch.is_grad_enabled(),
     )
-    camera_z = world_to_camera(model.means3d, frame.pose)[:, 2]
+    rgb, _, raster_depth = rasterizer(
+        means3D=means3d, means2D=means2d,
+        colors_precomp=model.colors.contiguous(), opacities=model.opacities.contiguous(),
+        scales=scales, rotations=rotations,
+    )
+    # The vendored autograd wrapper currently differentiates color outputs
+    # only. Use the fused depth/alpha channels for inference; training keeps
+    # the color-encoded depth pass so geometry losses retain their gradients.
+    if (
+        not torch.is_grad_enabled()
+        and raster_depth.ndim == 3
+        and raster_depth.shape[0] >= 2
+    ):
+        return RenderOutput(
+            rgb.permute(1, 2, 0),
+            raster_depth[0],
+            raster_depth[1].clamp(0, 1),
+        )
+
+    # Compatibility path for an extension built before the two-channel output.
+    camera_z = world_to_camera(means3d, frame.pose)[:, 2]
     depth_silhouette_colors = torch.stack(
         (camera_z, torch.ones_like(camera_z), camera_z.square()), dim=1
     )
     depth_silhouette, _, _ = backend.GaussianRasterizer(settings)(
-        means3D=model.means3d.contiguous(), means2D=torch.zeros_like(model.means3d),
+        means3D=means3d, means2D=torch.zeros_like(means3d),
         colors_precomp=depth_silhouette_colors.contiguous(), opacities=model.opacities.contiguous(),
-        scales=model.scales.contiguous(), rotations=rotations,
+        scales=scales, rotations=rotations,
     )
     return RenderOutput(rgb.permute(1, 2, 0), depth_silhouette[0], depth_silhouette[1].clamp(0, 1))

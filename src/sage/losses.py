@@ -7,6 +7,9 @@ from .config import MappingLossConfig
 from .contracts import MappingObservation, SourceType
 
 
+_SSIM_WINDOWS: dict[tuple[str, torch.dtype], torch.Tensor] = {}
+
+
 def photometric_loss(
     rendered: torch.Tensor,
     target: torch.Tensor,
@@ -19,10 +22,19 @@ def photometric_loss(
     # helper focused avoids a second per-step device synchronization.
     x = rendered.permute(2, 0, 1).unsqueeze(0)
     y = target.permute(2, 0, 1).unsqueeze(0)
-    coordinates = torch.arange(11, dtype=x.dtype, device=x.device) - 5
-    gaussian = torch.exp(-(coordinates.square()) / (2 * 1.5**2))
-    gaussian = gaussian / gaussian.sum()
-    window = torch.outer(gaussian, gaussian).view(1, 1, 11, 11).expand(3, 1, 11, 11).contiguous()
+    window_key = (str(x.device), x.dtype)
+    window = _SSIM_WINDOWS.get(window_key)
+    if window is None:
+        coordinates = torch.arange(11, dtype=x.dtype, device=x.device) - 5
+        gaussian = torch.exp(-(coordinates.square()) / (2 * 1.5**2))
+        gaussian = gaussian / gaussian.sum()
+        window = (
+            torch.outer(gaussian, gaussian)
+            .view(1, 1, 11, 11)
+            .expand(3, 1, 11, 11)
+            .contiguous()
+        )
+        _SSIM_WINDOWS[window_key] = window
     mu_x = F.conv2d(x, window, padding=5, groups=3)
     mu_y = F.conv2d(y, window, padding=5, groups=3)
     sigma_x = F.conv2d(x * x, window, padding=5, groups=3) - mu_x.square()
@@ -122,30 +134,59 @@ def mapping_loss(
     rendered_alpha: torch.Tensor,
     policy: MappingLossConfig,
     collect_diagnostics: bool = False,
+    target_depth: torch.Tensor | None = None,
+    source_masks: dict[str, torch.Tensor] | None = None,
+    include_image: bool = True,
+    include_diagnostics: bool = True,
+    validate_rgb: bool = True,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-    """Compute mapping loss from raw depth and keep all representation logic here."""
+    """Compute mapping loss while allowing refinement to skip unused work.
+
+    Defaults preserve the mapping-stage behavior. Appearance refinement already
+    owns its photometric loss and only consumes the LiDAR depth term, so it can
+    pass cached targets and disable duplicate image/diagnostic reductions.
+    """
     if not isinstance(target_mapping, MappingObservation):
         raise ValueError("mapping_loss requires a MappingObservation target")
     if target_mapping.depth_m.shape != rendered_depth.shape:
         raise ValueError("MappingObservation depth must match rendered depth")
 
-    target_depth = torch.as_tensor(
-        target_mapping.depth_m,
-        dtype=rendered_depth.dtype,
-        device=rendered_depth.device,
-    )
-    if not bool(torch.isfinite(rendered_rgb).all()) or not bool(torch.isfinite(target_rgb).all()):
+    if target_depth is None:
+        target_depth = torch.as_tensor(
+            target_mapping.depth_m,
+            dtype=rendered_depth.dtype,
+            device=rendered_depth.device,
+        )
+    elif (
+        target_depth.shape != rendered_depth.shape
+        or target_depth.device != rendered_depth.device
+        or target_depth.dtype != rendered_depth.dtype
+    ):
+        raise ValueError("Cached mapping depth must match the rendered depth")
+    if validate_rgb and not bool(
+        torch.isfinite(rendered_rgb).all()
+        & torch.isfinite(target_rgb).all()
+    ):
         raise FloatingPointError("Mapping loss received non-finite rendered or target RGB")
-    image, l1, ssim = photometric_loss(
-        rendered_rgb, target_rgb, ssim_weight=policy.ssim_weight,
-    )
+    if include_image:
+        image, l1, ssim = photometric_loss(
+            rendered_rgb, target_rgb, ssim_weight=policy.ssim_weight,
+        )
+    else:
+        image = rendered_rgb.new_zeros(())
+        l1 = image
+        ssim = image
     if rendered_alpha.shape != rendered_depth.shape:
         raise ValueError("Policy mapping loss requires matching rendered alpha")
 
     target_valid = torch.isfinite(target_depth) & (target_depth > 0)
     raw_valid = torch.isfinite(rendered_depth)
     device = rendered_depth.device
-    masks = _source_masks(target_mapping, device)
+    masks = (
+        source_masks
+        if source_masks is not None
+        else _source_masks(target_mapping, device)
+    )
     observation_valid = target_valid & raw_valid
     depth_for_loss = alpha_normalized_depth(rendered_depth, rendered_alpha)
     alpha_valid = torch.isfinite(rendered_alpha) & (rendered_alpha >= 0)
@@ -166,19 +207,25 @@ def mapping_loss(
     safe_depth = torch.where(torch.isfinite(depth_for_loss), depth_for_loss, torch.zeros_like(depth_for_loss))
     safe_target = torch.where(target_valid, target_depth, torch.zeros_like(target_depth))
     residual = (safe_depth - safe_target).abs()
-    zero = _zero(rendered_depth) + _zero(rendered_alpha)
     numerator = residual * support
+    depth = _masked_mean(numerator, fixed_depth_denominator)
+    total = (
+        policy.image_weight * image + policy.depth_weight * depth
+        if include_image
+        else depth
+    )
+    if not include_diagnostics:
+        return total, {"depth": depth}
+
+    zero = _zero(rendered_depth) + _zero(rendered_alpha)
     geo_center = _masked_mean(numerator, fixed_depth_denominator & masks["center"])
     geo_fused5 = _masked_mean(numerator, fixed_depth_denominator & masks["fused5"])
     center_mae = _masked_mean(residual * observation_valid.to(residual.dtype), fixed_depth_denominator & masks["center"])
     fused5_mae = _masked_mean(residual * observation_valid.to(residual.dtype), fixed_depth_denominator & masks["fused5"])
-    depth = _masked_mean(numerator, fixed_depth_denominator)
 
     hit_center = zero
     hit_fused5 = zero
     hit = hit_center + hit_fused5
-    total = policy.image_weight * image + policy.depth_weight * depth
-
     alpha_mean, alpha_p10, alpha_p50, alpha_below_a0, _ = _alpha_statistics(
         rendered_alpha,
         target_valid,

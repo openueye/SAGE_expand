@@ -1,4 +1,9 @@
-# SAGE
+# SAGE Expand
+
+`SAGE_expand` is the engineering-acceleration copy of `MyNet/SAGE`. It keeps
+the mapping and appearance objectives, schedules, and final evaluation
+semantics, but does not treat interruption recovery, per-step histories, or
+bitwise reproducibility as optimization constraints.
 
 SAGE (Structure-Anchored Gaussian Enhancement) is the complete multi-sensor
 Gaussian-mapping method used in this thesis. From either a calibrated finite
@@ -110,7 +115,6 @@ outputs/sage/
 ├── final/
 │   ├── appearance_checkpoint.pt
 │   ├── appearance_map.ply
-│   ├── comparison.json
 │   └── run_manifest.json
 ├── evaluation/
 │   ├── evaluation.json
@@ -118,10 +122,24 @@ outputs/sage/
 └── run_manifest.json
 ```
 
-`final/appearance_checkpoint.pt` is the final SAGE checkpoint. The structure
-checkpoint is retained only so an interrupted run can resume without repeating
-completed structure optimization. Existing output paths are never silently
-overwritten.
+`final/appearance_checkpoint.pt` is the final SAGE checkpoint. Effectiveness is
+checked once by the final evaluation instead of repeatedly evaluating and
+serializing intermediate refinement milestones. Existing output paths are
+never silently overwritten.
+
+## Acceleration scope
+
+- Mapping keeps the same frame selection, optimization schedule, growth,
+  pruning, losses, and iteration counts as `MyNet/SAGE`.
+- Appearance refinement caches immutable frame targets and geometry terms,
+  avoids duplicate photometric/diagnostic work, and records only milestone
+  summaries rather than synchronizing every optimizer step.
+- The CUDA renderer emits accumulated depth and alpha with RGB in one
+  visibility pass for no-gradient growth and evaluation. Training retains the
+  differentiable depth pass required by LiDAR and dense-normal losses.
+- Baseline, candidate, exposure-corrected, and milestone evaluations are not
+  duplicated inside refinement; the workflow's final evaluation remains the
+  validity check.
 
 ## Evaluation
 
@@ -144,13 +162,12 @@ input; it contains no dataset-specific frame list or assumed frame count.
 
 `python -m sage` exposes the same `train` and `evaluate` commands.
 
-## Reproducibility contract
+## Result contract
 
-Published checkpoints record input and configuration hashes, selected mapping
-frames, aligned dense-prior provenance, bounded exposure nuisance state,
-dependency identities, and producer-code identity. Publication verifies that
-positions, scales, rotations, stable IDs, creation metadata, and source
-provenance remain bitwise unchanged during appearance optimization.
+Final checkpoints retain input/configuration metadata and verify that
+appearance refinement leaves geometry and topology frozen. Exact replay,
+per-step histories, intermediate recovery artifacts, and bitwise-identical
+results are not goals of this acceleration copy.
 
 Official image and geometry metrics use the native final map without learned
 exposure correction. Exposure-corrected mapping-frame metrics are reported

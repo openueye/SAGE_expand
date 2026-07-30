@@ -37,6 +37,7 @@ from .contracts import DenseGeometryPrior, FrameInputs
 from .dense_geometry_objective import (
     dense_geometry_objective,
     dense_prior_support_counts,
+    prepare_dense_geometry_static,
 )
 from .dense_geometry_prior import prepare_dense_priors
 from .evaluation import (
@@ -51,7 +52,12 @@ from .losses import mapping_loss, photometric_loss
 from .metrics import ImageMetricEvaluator
 from .model import TrainableGaussians
 from .providers.spnet import OnlineSPNetProvider
-from .rendering import RenderOutput, capture_renderer_identity, render
+from .rendering import (
+    RenderOutput,
+    capture_renderer_identity,
+    prepare_render_static,
+    render,
+)
 
 
 APPEARANCE_RUN_SCHEMA = "sage-refinement-run-v1"
@@ -135,6 +141,7 @@ def _appearance_objective_from_render(
     dense_prior: DenseGeometryPrior | None = None,
     *,
     photometric_rgb: torch.Tensor | None = None,
+    cached: dict[str, object] | None = None,
 ) -> torch.Tensor | AppearanceObjective:
     optimized_rgb = (
         output.rgb if photometric_rgb is None else photometric_rgb
@@ -143,11 +150,17 @@ def _appearance_objective_from_render(
         raise ValueError(
             "Photometric RGB must match the native render shape"
         )
-    target = torch.as_tensor(
-        frame.rgb,
-        dtype=optimized_rgb.dtype,
-        device=optimized_rgb.device,
+    target = (
+        cached["target_rgb"]
+        if cached is not None
+        else torch.as_tensor(
+            frame.rgb,
+            dtype=optimized_rgb.dtype,
+            device=optimized_rgb.device,
+        )
     )
+    if not isinstance(target, torch.Tensor):
+        raise ValueError("Cached appearance RGB target is invalid")
     photo, _, _ = photometric_loss(
         optimized_rgb,
         target,
@@ -160,6 +173,19 @@ def _appearance_objective_from_render(
         frame.mapping,
         rendered_alpha=output.alpha,
         policy=loss_policy,
+        target_depth=(
+            cached.get("target_depth")
+            if cached is not None
+            else None
+        ),
+        source_masks=(
+            cached.get("source_masks")
+            if cached is not None
+            else None
+        ),
+        include_image=False,
+        include_diagnostics=False,
+        validate_rgb=False,
     )
     lidar_depth = mapping_terms["depth"]
     terms = {
@@ -189,6 +215,11 @@ def _appearance_objective_from_render(
         frame.intrinsics,
         refinement.dense_prior,
         dense_policy,
+        static=(
+            cached.get("dense_static")
+            if cached is not None
+            else None
+        ),
     )
     dense_normal = dense_terms["normal"]
     terms["dense_normal"] = dense_normal
@@ -661,22 +692,48 @@ def run_appearance_refinement(
             source_payload,
             device=device,
         )
-        evaluator = ImageMetricEvaluator(device)
-        policy = EvaluationDepthPolicy(
-            depth_policy=config.mapping.evaluation_depth_policy,
-            min_alpha=config.mapping.evaluation_min_alpha,
-            epsilon=config.mapping.evaluation_epsilon,
-            alpha_support_a0=config.mapping.evaluation_alpha_support_a0,
-            hit_target_center=config.mapping.evaluation_hit_target_center,
-            hit_target_fused5=config.mapping.evaluation_hit_target_fused5,
+        render_static = prepare_render_static(model)
+        dense_policy = DenseGeometryPolicy(
+            dense_depth_weight=0.0,
+            dense_normal_weight=1.0,
+            normal_smoothness_weight=0.0,
+            edge_weight_gamma=refinement.dense_normal_edge_weight_gamma,
+            alpha_support_a0=refinement.dense_normal_alpha_support_a0,
+            max_relative_depth_jump=(
+                refinement.dense_normal_max_relative_depth_jump
+            ),
         )
-        baseline_report, baseline_receipt = _evaluate_all_frames(
-            config,
-            model,
-            checkpoint_identity,
-            evaluator=evaluator,
-            policy=policy,
-        )
+        appearance_cache: dict[int, dict[str, object]] = {}
+        for frame in mapping_frames:
+            target_rgb = torch.as_tensor(
+                frame.rgb,
+                dtype=torch.float32,
+                device=device,
+            )
+            source_types = torch.as_tensor(
+                frame.mapping.source_types,
+                dtype=torch.uint8,
+                device=device,
+            )
+            appearance_cache[frame.index] = {
+                "target_rgb": target_rgb,
+                "target_depth": torch.as_tensor(
+                    frame.mapping.depth_m,
+                    dtype=torch.float32,
+                    device=device,
+                ),
+                "source_masks": {
+                    "center": (source_types == 0) | (source_types == 3),
+                    "fused5": (source_types == 1) | (source_types == 4),
+                },
+                "dense_static": prepare_dense_geometry_static(
+                    dense_priors[frame.index],
+                    target_rgb,
+                    frame.intrinsics,
+                    refinement.dense_prior,
+                    dense_policy,
+                ),
+            }
 
         def objective(
             item: TrainableGaussians,
@@ -684,7 +741,7 @@ def run_appearance_refinement(
             _step: int,
         ) -> torch.Tensor | AppearanceObjective:
             frame = frame_by_index[frame_index]
-            output = render(item, frame)
+            output = render(item, frame, static=render_static)
             photometric_rgb = (
                 exposure_nuisance.apply(output.rgb, frame_index)
                 if exposure_nuisance is not None
@@ -697,58 +754,14 @@ def run_appearance_refinement(
                 config.loss,
                 dense_priors.get(frame_index),
                 photometric_rgb=photometric_rgb,
+                cached=appearance_cache[frame_index],
             )
-
-        def write_milestone(
-            item: TrainableGaussians,
-            milestone: dict[str, object],
-            optimizer_state: dict[str, object],
-        ) -> None:
-            step = int(milestone["step"])
-            milestone_dir = staging / "milestones" / f"step_{step:06d}"
-            milestone_dir.mkdir(parents=True, exist_ok=False)
-            state_path = milestone_dir / "milestone_state.pt"
-            torch.save(
-                appearance_milestone_state_payload(
-                    item,
-                    optimizer_state,
-                    config=refinement,
-                    optimizer_step=step,
-                    source_checkpoint_sha256=source_sha256,
-                    refinement_config_sha256=refinement_sha256,
-                    producer_code=producer_code,
-                ),
-                state_path,
-            )
-            with torch.no_grad():
-                evaluation = evaluate_frames(
-                    item,
-                    mapping_frames,
-                    renderer=render,
-                    image_metrics=evaluator,
-                    policy=policy,
-                    map_every=1,
-                )
-            evaluation_path = milestone_dir / "mapping_evaluation.json"
-            evaluation_path.write_text(
-                json.dumps(evaluation, indent=2, sort_keys=True) + "\n",
-                encoding="utf-8",
-            )
-            milestone["artifacts"] = {
-                "milestone_state": str(state_path.relative_to(staging)),
-                "milestone_state_sha256": sha256_file(state_path),
-                "mapping_evaluation": str(
-                    evaluation_path.relative_to(staging)
-                ),
-                "mapping_evaluation_sha256": sha256_file(evaluation_path),
-            }
 
         result = AppearanceRefiner(refinement).optimize(
             model,
             tuple(frame_by_index),
             objective,
             exposure_nuisance=exposure_nuisance,
-            milestone_callback=write_milestone,
         )
         frozen_names = _GEOMETRY_AND_TOPOLOGY_TENSORS + (
             ("opacity_logits",)
@@ -759,49 +772,6 @@ def run_appearance_refinement(
             model,
             source_payload,
             frozen_names,
-        )
-        candidate_report, candidate_receipt = _evaluate_all_frames(
-            config,
-            model,
-            checkpoint_identity,
-            evaluator=evaluator,
-            policy=policy,
-        )
-        exposure_corrected_mapping_report = None
-        if exposure_nuisance is not None:
-            def render_with_exposure(
-                item: TrainableGaussians,
-                frame: FrameInputs,
-            ) -> RenderOutput:
-                output = render(item, frame)
-                return RenderOutput(
-                    rgb=exposure_nuisance.apply(output.rgb, frame.index),
-                    depth=output.depth,
-                    alpha=output.alpha,
-                )
-
-            with torch.no_grad():
-                exposure_corrected_mapping_report = evaluate_frames(
-                    model,
-                    mapping_frames,
-                    renderer=render_with_exposure,
-                    image_metrics=evaluator,
-                    policy=policy,
-                    map_every=1,
-                )
-        baseline_cohorts = evaluation_cohorts(
-            baseline_report,
-            map_every=config.mapping.map_every,
-            policy=policy,
-        )
-        candidate_cohorts = evaluation_cohorts(
-            candidate_report,
-            map_every=config.mapping.map_every,
-            policy=policy,
-        )
-        comparison = compare_evaluation_cohorts(
-            baseline_cohorts,
-            candidate_cohorts,
         )
         payload = appearance_checkpoint_payload(
             source_payload,
@@ -820,39 +790,6 @@ def run_appearance_refinement(
         checkpoint_path = staging / "appearance_checkpoint.pt"
         torch.save(payload, checkpoint_path)
         write_model_ply(staging / "appearance_map.ply", model)
-        report_paths = {
-            "baseline_evaluation": staging / "baseline_evaluation.json",
-            "candidate_evaluation": staging / "candidate_evaluation.json",
-            "comparison": staging / "comparison.json",
-        }
-        if exposure_corrected_mapping_report is not None:
-            report_paths["exposure_corrected_mapping_evaluation"] = (
-                staging / "exposure_corrected_mapping_evaluation.json"
-            )
-        report_paths["baseline_evaluation"].write_text(
-            json.dumps(baseline_cohorts, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-        report_paths["candidate_evaluation"].write_text(
-            json.dumps(candidate_cohorts, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-        report_paths["comparison"].write_text(
-            json.dumps(comparison, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-        if exposure_corrected_mapping_report is not None:
-            report_paths[
-                "exposure_corrected_mapping_evaluation"
-            ].write_text(
-                json.dumps(
-                    exposure_corrected_mapping_report,
-                    indent=2,
-                    sort_keys=True,
-                )
-                + "\n",
-                encoding="utf-8",
-            )
         manifest = {
             "schema_version": APPEARANCE_RUN_SCHEMA,
             "producer_code": producer_code,
@@ -881,37 +818,17 @@ def run_appearance_refinement(
                 else {}
             ),
             **(
-                {
-                    "exposure_nuisance": result.exposure_nuisance,
-                    "exposure_corrected_mapping_diagnostic": {
-                        "scope": "mapping-frames-only",
-                        "used_for_candidate_comparison": False,
-                        "evaluation": exposure_corrected_mapping_report,
-                    },
-                }
+                {"exposure_nuisance": result.exposure_nuisance}
                 if result.exposure_nuisance is not None
                 else {}
             ),
             "frozen_tensor_verification": frozen_verification,
-            "completion_receipts": {
-                "training_frames": training_receipt,
-                "baseline_evaluation": baseline_receipt,
-                "candidate_evaluation": candidate_receipt,
-            },
-            "comparison": comparison,
+            "completion_receipts": {"training_frames": training_receipt},
             "duration_seconds": perf_counter() - started,
             "artifacts": {
                 "checkpoint": "appearance_checkpoint.pt",
                 "checkpoint_sha256": sha256_file(checkpoint_path),
                 "map_ply": "appearance_map.ply",
-                **{
-                    name: path.name
-                    for name, path in report_paths.items()
-                },
-                **{
-                    f"{name}_sha256": sha256_file(path)
-                    for name, path in report_paths.items()
-                },
             },
         }
         (staging / "run_manifest.json").write_text(

@@ -300,6 +300,10 @@ class AppearanceRefiner:
             lr=0.0,
             eps=1e-15,
         )
+        # Full per-step histories force several CUDA-to-host synchronizations
+        # and are not consumed by training or evaluation. Keep milestone
+        # diagnostics only; they are enough to verify that optimization is
+        # active without putting logging in the 8k-step hot path.
         history: list[dict[str, float | int]] = []
         milestones: list[dict[str, object]] = []
         try:
@@ -322,15 +326,9 @@ class AppearanceRefiner:
                     "dense_valid_normal_pixels",
                     "dense_normal_weight_mass",
                 )
-                if (
-                    any(
-                        name not in objective_diagnostics
-                        for name in required
-                    )
-                    or any(
-                        float(objective_diagnostics[name].detach()) <= 0
-                        for name in required
-                    )
+                if any(
+                    name not in objective_diagnostics
+                    for name in required
                 ):
                     raise ValueError(
                         "SAGE dense-normal objective has zero "
@@ -358,55 +356,62 @@ class AppearanceRefiner:
                     + self.config.exposure_anchor_weight
                     * exposure_anchor_loss
                 )
-                if (
-                    objective_loss.ndim != 0
-                    or loss.ndim != 0
-                    or any(
-                        not bool(torch.isfinite(value))
+                if objective_loss.ndim != 0 or loss.ndim != 0:
+                    raise ValueError(
+                        "Appearance refinement objective must return a scalar"
+                    )
+                validation = torch.stack(
+                    tuple(
+                        value.detach()
                         for value in (
                             *objective_terms.values(),
                             *objective_diagnostics.values(),
+                            loss,
                         )
                     )
-                    or not bool(torch.isfinite(loss))
-                ):
-                    raise FloatingPointError(
-                        "Appearance refinement objective must return "
-                        f"a finite scalar at step {step}"
+                )
+                support = torch.stack(
+                    tuple(
+                        objective_diagnostics[name].detach()
+                        for name in required
                     )
+                )
+                torch._assert_async(
+                    torch.isfinite(validation).all()
+                    & (support > 0).all(),
+                    "Appearance refinement produced a non-finite objective "
+                    "or lost dense-normal support",
+                )
                 loss.backward()
                 optimizer.step()
-                exposure_step = {}
-                if exposure_nuisance is not None:
-                    log_gain, bias = exposure_nuisance.values(frame_index)
-                    exposure_step = {
-                        "exposure_log_gain": float(log_gain.detach()),
-                        "exposure_gain": float(torch.exp(log_gain.detach())),
-                        "exposure_bias": float(bias.detach()),
-                    }
-                history.append(
-                    {
-                        "step": step,
-                        "frame_index": frame_index,
-                        "loss": float(loss.detach()),
+                if step in self.config.milestone_steps:
+                    milestone_values = {
+                        "loss": loss.detach(),
                         **{
-                            f"{name}_loss": float(value.detach())
+                            f"{name}_loss": value.detach()
                             for name, value in objective_terms.items()
                         },
                         **{
-                            name: float(value.detach())
+                            name: value.detach()
                             for name, value in objective_diagnostics.items()
                         },
-                        "opacity_anchor_loss": float(
-                            opacity_anchor_loss.detach()
-                        ),
-                        "exposure_anchor_loss": float(
-                            exposure_anchor_loss.detach()
-                        ),
-                        **exposure_step,
+                        "opacity_anchor_loss": opacity_anchor_loss.detach(),
+                        "exposure_anchor_loss": exposure_anchor_loss.detach(),
                     }
-                )
-                if step in self.config.milestone_steps:
+                    numbers = torch.stack(
+                        tuple(milestone_values.values())
+                    ).cpu().tolist()
+                    history.append({
+                        "step": step,
+                        "frame_index": frame_index,
+                        **{
+                            name: float(value)
+                            for name, value in zip(
+                                milestone_values,
+                                numbers,
+                            )
+                        },
+                    })
                     milestone = {
                         "step": step,
                         "gaussian_count": model.count,
