@@ -1,0 +1,28 @@
+name: sage
+platforms:
+  - linux-64
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+dependencies:
+  - python=3.10
+  - cuda-nvcc=12.1
+  - cuda-version=12.1
+  - cuda-cudart=12.1
+  - cuda-cudart_linux-64=12.1
+  - cuda-cudart-dev=12.1
+  - cuda-cccl=12.1
+  - cuda-cccl_linux-64=12.1
+  - gxx_linux-64=11.4.0
+  - numpy=2.2.6
+  - pillow=12.2.0
+  - pyyaml=6.0.3
+  - pip
+  - pip:
+      - torch @ https://download.pytorch.org/whl/cu121/torch-2.5.1%2Bcu121-cp310-cp310-linux_x86_64.whl#sha256=92af92c569de5da937dd1afb45ecfdd598ec1254cf2e49e3d698cb24d71aae14
+      - torchvision @ https://download.pytorch.org/whl/cu121/torchvision-0.20.1%2Bcu121-cp310-cp310-linux_x86_64.whl#sha256=304937b82c933d5155bd04d771f4b187273f67a76050bb4276b521f7e9b4c4e7
+      - torchmetrics==1.9.0
+      - plyfile==1.1.4
+      - opencv-python @ https://files.pythonhosted.org/packages/cf/4c/c73f828fdbcd37eaf21d08fa852544a3ca7c2dbb3ea76873d64f2ea413d1/opencv_python-5.0.0.93-cp37-abi3-manylinux_2_28_x86_64.whl#sha256=c8de2dec111122a02e8beb28e16c31904992dfd6186560b142a92c71403c1039
+      - -e .

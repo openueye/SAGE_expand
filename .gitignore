@@ -1,0 +1,40 @@
+# Python caches and build products
+__pycache__/
+*.py[cod]
+.mypy_cache/
+*.egg-info/
+build/
+dist/
+wheelhouse/
+
+# Native build products
+*.so
+*.o
+*.a
+CMakeFiles/
+CMakeCache.txt
+
+# Environments, editors, and local configuration
+.env
+.venv/
+.conda/
+.idea/
+.vscode/
+
+# Models, data, and run outputs
+models/*.pth
+models/*.pt
+models/*.onnx
+models/*.engine
+models/files/
+third_party/SPNet/
+/data/
+/datasets/
+runs/
+outputs/
+checkpoints/**/*.pt
+checkpoints/**/*.pth
+checkpoints/**/*.ply
+*.ckpt
+*.pth
+*.ply

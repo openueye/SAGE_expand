@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sage"
+version = "1.0.0"
+description = "SAGE: complete structure mapping and appearance refinement"
+readme = "README.md"
+requires-python = ">=3.10,<3.11"
+authors = [
+  {name = "Haibo Zhu", email = "zhuhaibo.0202@outlook.com"},
+]
+dependencies = [
+  "numpy==2.2.6",
+  "opencv-python==5.0.0.93",
+  "Pillow==12.2.0",
+  "torch==2.5.1",
+  "torchmetrics==1.9.0",
+  "plyfile==1.1.4",
+  "PyYAML==6.0.3",
+]
+
+[project.urls]
+Repository = "https://github.com/openueye/SAGE"
+
+[project.scripts]
+sage = "sage.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.data-files]
+"sage/models" = ["models/manifest.json"]
+
+[tool.setuptools.package-data]
+"sage.providers" = ["spnet_identity.json"]

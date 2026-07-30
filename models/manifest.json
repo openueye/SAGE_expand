@@ -1,0 +1,23 @@
+{
+  "schema_version": "sage-model-registry-v1",
+  "models": [
+    {
+      "model_id": "spnet-large-300",
+      "filename": "Large_300.pth",
+      "sha256": "e4a3dbaae1aff425c26db6083cb6ea8e1d6f13d719cc567054b2522b3bf84559",
+      "purpose": "SPNet online blind-region depth evidence",
+      "source": "https://github.com/Wang-xjtu/SPNet",
+      "license_status": "upstream-license-not-found; user-provided only; not redistributable by SAGE",
+      "acquisition_policy": "user-source-required"
+    },
+    {
+      "model_id": "alexnet-imagenet",
+      "filename": "alexnet-owt-7be5be79.pth",
+      "sha256": "7be5be791159472b1fbf3c69796f7cb30dca7ad8466c2df70058c37116cdee02",
+      "purpose": "TorchMetrics LPIPS AlexNet ImageNet backbone",
+      "source": "https://download.pytorch.org/models/alexnet-owt-7be5be79.pth",
+      "license_status": "not bundled; user-provided only",
+      "acquisition_policy": "user-source-required"
+    }
+  ]
+}

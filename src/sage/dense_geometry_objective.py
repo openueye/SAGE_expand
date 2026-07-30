@@ -1,0 +1,238 @@
+"""Dense LiDAR-anchored objective for SAGE."""
+
+from __future__ import annotations
+
+import torch
+from torch.nn import functional as F
+
+from .contracts import CameraIntrinsics, DenseGeometryPrior
+from .dense_geometry_config import DenseGeometryPolicy, DensePriorPolicy
+from .losses import alpha_normalized_depth
+
+
+def _camera_points(
+    depth: torch.Tensor,
+    intrinsics: CameraIntrinsics,
+) -> torch.Tensor:
+    height, width = depth.shape
+    rows, columns = torch.meshgrid(
+        torch.arange(height, dtype=depth.dtype, device=depth.device),
+        torch.arange(width, dtype=depth.dtype, device=depth.device),
+        indexing="ij",
+    )
+    return torch.stack(
+        (
+            (columns - intrinsics.cx) * depth / intrinsics.fx,
+            (rows - intrinsics.cy) * depth / intrinsics.fy,
+            depth,
+        ),
+        dim=2,
+    )
+
+
+def _depth_normals(
+    depth: torch.Tensor,
+    valid_depth: torch.Tensor,
+    intrinsics: CameraIntrinsics,
+    *,
+    max_relative_depth_jump: float | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    height, width = depth.shape
+    normals = torch.zeros(
+        (height, width, 3),
+        dtype=depth.dtype,
+        device=depth.device,
+    )
+    normal_valid = torch.zeros(
+        (height, width),
+        dtype=torch.bool,
+        device=depth.device,
+    )
+    if height < 3 or width < 3:
+        return normals, normal_valid
+    points = _camera_points(depth, intrinsics)
+    tangent_x = points[1:-1, 2:] - points[1:-1, :-2]
+    tangent_y = points[2:, 1:-1] - points[:-2, 1:-1]
+    normal = torch.cross(tangent_x, tangent_y, dim=2)
+    norm = torch.linalg.vector_norm(normal, dim=2)
+    stencil_valid = (
+        valid_depth[1:-1, 1:-1]
+        & valid_depth[1:-1, :-2]
+        & valid_depth[1:-1, 2:]
+        & valid_depth[:-2, 1:-1]
+        & valid_depth[2:, 1:-1]
+        & torch.isfinite(norm)
+        & (norm > torch.finfo(depth.dtype).eps)
+    )
+    if max_relative_depth_jump is not None:
+        center = depth[1:-1, 1:-1]
+        neighbors = torch.stack(
+            (
+                depth[1:-1, :-2],
+                depth[1:-1, 2:],
+                depth[:-2, 1:-1],
+                depth[2:, 1:-1],
+            )
+        )
+        relative_jump = (
+            (neighbors - center).abs()
+            / center.abs().clamp_min(torch.finfo(depth.dtype).eps)
+        )
+        stencil_valid &= (
+            torch.isfinite(relative_jump).all(dim=0)
+            & (relative_jump <= max_relative_depth_jump).all(dim=0)
+        )
+    normals[1:-1, 1:-1] = F.normalize(normal, dim=2)
+    normal_valid[1:-1, 1:-1] = stencil_valid
+    return normals, normal_valid
+
+
+def _stencil_minimum(values: torch.Tensor) -> torch.Tensor:
+    height, width = values.shape
+    output = torch.zeros_like(values)
+    if height < 3 or width < 3:
+        return output
+    output[1:-1, 1:-1] = torch.stack(
+        (
+            values[1:-1, 1:-1],
+            values[1:-1, :-2],
+            values[1:-1, 2:],
+            values[:-2, 1:-1],
+            values[2:, 1:-1],
+        ),
+        dim=0,
+    ).amin(dim=0)
+    return output
+
+
+def edge_weights(
+    target_rgb: torch.Tensor,
+    gamma: float,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Return detached center, horizontal and vertical edge attenuations."""
+    gray = target_rgb.detach().mean(dim=2)
+    horizontal_gradient = (gray[:, 1:] - gray[:, :-1]).abs()
+    vertical_gradient = (gray[1:, :] - gray[:-1, :]).abs()
+    horizontal_weight = torch.exp(-gamma * horizontal_gradient)
+    vertical_weight = torch.exp(-gamma * vertical_gradient)
+    center_gradient = torch.maximum(
+        torch.maximum(
+            F.pad(horizontal_gradient, (1, 0)),
+            F.pad(horizontal_gradient, (0, 1)),
+        ),
+        torch.maximum(
+            F.pad(vertical_gradient, (0, 0, 1, 0)),
+            F.pad(vertical_gradient, (0, 0, 0, 1)),
+        ),
+    )
+    return (
+        torch.exp(-gamma * center_gradient),
+        horizontal_weight,
+        vertical_weight,
+    )
+
+
+def dense_prior_support_counts(
+    prior: DenseGeometryPrior,
+    intrinsics: CameraIntrinsics,
+    *,
+    max_relative_depth_jump: float | None = None,
+) -> tuple[int, int]:
+    """Return valid dense-depth and target-normal center counts."""
+    expected = (intrinsics.height, intrinsics.width)
+    if prior.aligned_depth_m.shape != expected:
+        raise ValueError("Dense geometry prior dimensions must match intrinsics")
+    target_depth = torch.from_numpy(prior.aligned_depth_m)
+    prior_valid = torch.from_numpy(prior.valid_mask)
+    _, target_valid = _depth_normals(
+        target_depth,
+        prior_valid,
+        intrinsics,
+        max_relative_depth_jump=max_relative_depth_jump,
+    )
+    return int(prior_valid.sum()), int(target_valid.sum())
+
+
+def dense_geometry_objective(
+    rendered_depth: torch.Tensor,
+    rendered_alpha: torch.Tensor,
+    prior: DenseGeometryPrior,
+    rgb: torch.Tensor,
+    intrinsics: CameraIntrinsics,
+    prior_policy: DensePriorPolicy,
+    geometry: DenseGeometryPolicy,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    """Return robust dense depth, normal alignment, and edge-aware normal smoothness."""
+    expected = (intrinsics.height, intrinsics.width)
+    if rendered_depth.shape != expected or rendered_alpha.shape != expected:
+        raise ValueError("Dense geometry render dimensions must match intrinsics")
+    if prior.aligned_depth_m.shape != expected or rgb.shape != (*expected, 3):
+        raise ValueError("Dense geometry prior and RGB dimensions must match intrinsics")
+    target_depth = torch.as_tensor(
+        prior.aligned_depth_m,
+        dtype=rendered_depth.dtype,
+        device=rendered_depth.device,
+    )
+    weights = torch.as_tensor(
+        prior.confidence,
+        dtype=rendered_depth.dtype,
+        device=rendered_depth.device,
+    ).pow(prior_policy.confidence_exponent)
+    prior_valid = torch.as_tensor(
+        prior.valid_mask,
+        dtype=torch.bool,
+        device=rendered_depth.device,
+    )
+    predicted = alpha_normalized_depth(rendered_depth, rendered_alpha)
+    valid = (
+        prior_valid
+        & (weights > 0)
+        & torch.isfinite(predicted)
+        & (predicted > 0)
+        & torch.isfinite(rendered_alpha)
+        & (rendered_alpha.detach() >= geometry.alpha_support_a0)
+    )
+    residual = torch.sqrt((predicted - target_depth).square() + prior_policy.robust_epsilon_m ** 2) - prior_policy.robust_epsilon_m
+    mass = torch.where(valid, weights, torch.zeros_like(weights)).sum()
+    depth = (torch.where(valid, residual * weights, torch.zeros_like(residual)).sum() / mass.clamp_min(1))
+    predicted_normals, predicted_valid = _depth_normals(
+        predicted,
+        valid,
+        intrinsics,
+        max_relative_depth_jump=geometry.max_relative_depth_jump,
+    )
+    target_normals, target_valid = _depth_normals(
+        target_depth,
+        prior_valid,
+        intrinsics,
+        max_relative_depth_jump=geometry.max_relative_depth_jump,
+    )
+    normal_valid = predicted_valid & target_valid
+    normal_values = 1 - (predicted_normals * target_normals).sum(dim=2).clamp(-1, 1)
+    center, horizontal, vertical = edge_weights(rgb, geometry.edge_weight_gamma)
+    normal_weights = _stencil_minimum(weights) * center
+    normal_mass = torch.where(normal_valid, normal_weights, torch.zeros_like(normal_weights)).sum()
+    normal = (
+        torch.where(
+            normal_valid,
+            normal_values * normal_weights,
+            torch.zeros_like(normal_values),
+        ).sum()
+        / normal_mass.clamp_min(1)
+    )
+    horizontal_valid = predicted_valid[:, 1:] & predicted_valid[:, :-1]
+    vertical_valid = predicted_valid[1:, :] & predicted_valid[:-1, :]
+    horizontal_values = 1 - (predicted_normals[:, 1:] * predicted_normals[:, :-1]).sum(dim=2).clamp(-1, 1)
+    vertical_values = 1 - (predicted_normals[1:] * predicted_normals[:-1]).sum(dim=2).clamp(-1, 1)
+    smooth = (torch.where(horizontal_valid, horizontal_values * horizontal, torch.zeros_like(horizontal_values)).sum() + torch.where(vertical_valid, vertical_values * vertical, torch.zeros_like(vertical_values)).sum()) / (horizontal_valid.sum() + vertical_valid.sum()).clamp_min(1)
+    total = geometry.dense_depth_weight * depth + geometry.dense_normal_weight * normal + geometry.normal_smoothness_weight * smooth
+    return total, {
+        "total": total,
+        "depth": depth,
+        "normal": normal,
+        "smoothness": smooth,
+        "weight_mass": mass,
+        "normal_weight_mass": normal_mass,
+        "valid_depth_pixels": valid.to(rendered_depth.dtype).sum(),
+        "valid_normal_pixels": normal_valid.to(rendered_depth.dtype).sum(),
+    }

@@ -1,0 +1,26 @@
+{
+  "schema_version": "sage-spnet-source-identity-v1",
+  "source_id": "SPNet-Large-CNX",
+  "repository": "https://github.com/Wang-xjtu/SPNet",
+  "commit": "b836bd044517b33d3737094acd6a1f09c2362f04",
+  "tracked_tree_sha256": "d7e0ec9012622d788fd2cd0a89d8984ff00fccf2569e6ce2009d055427589518",
+  "tracked_files": [
+    "SPNet/Hole_Datasets/gitignore.txt",
+    "SPNet/README.md",
+    "SPNet/RGBD_Datasets/gitignore.txt",
+    "SPNet/Test_Datasets/gitignore.txt",
+    "SPNet/checkpoints/gitignore.txt",
+    "SPNet/config.py",
+    "SPNet/src/_init_.py",
+    "SPNet/src/custom_blocks.py",
+    "SPNet/src/data_tools.py",
+    "SPNet/src/losses.py",
+    "SPNet/src/modules.py",
+    "SPNet/src/networks.py",
+    "SPNet/src/src_main.py",
+    "SPNet/src/utils.py",
+    "SPNet/test.py",
+    "SPNet/test_utils.py",
+    "SPNet/train.py"
+  ]
+}
