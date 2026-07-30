@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import numpy as np
 import torch
 from torch.nn import functional as F
@@ -25,16 +27,20 @@ def prepare_dense_priors(
     frames: tuple[FrameInputs, ...],
     provider: DenseSPNetProvider,
     policy: DensePriorPolicy,
+    *,
+    progress_callback: Callable[[int, int, FrameInputs], None] | None = None,
 ) -> dict[int, DenseGeometryPrior]:
     """Materialize aligned dense priors before a Gaussian model occupies CUDA."""
-    return {
-        frame.index: build_dense_geometry_prior(
+    priors: dict[int, DenseGeometryPrior] = {}
+    for completed, frame in enumerate(frames, start=1):
+        priors[frame.index] = build_dense_geometry_prior(
             provider.dense_evidence_for(frame),
             frame.mapping,
             policy,
         )
-        for frame in frames
-    }
+        if progress_callback is not None:
+            progress_callback(completed, len(frames), frame)
+    return priors
 
 
 def _weighted_median(values: np.ndarray, weights: np.ndarray) -> float:

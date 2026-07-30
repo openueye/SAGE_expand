@@ -9,6 +9,7 @@ import platform
 import subprocess
 import sys
 import tempfile
+from threading import Thread
 from time import perf_counter
 from typing import Any
 
@@ -114,6 +115,21 @@ def _rss_bytes(value: int) -> int:
     return int(value * 1024 if sys.platform.startswith("linux") else value)
 
 
+def _forward_child_output(
+    stream: Any,
+    destination: Any,
+    captured: list[str],
+) -> None:
+    """Relay one child stream while retaining the receipt tail source."""
+    try:
+        for line in iter(stream.readline, ""):
+            captured.append(line)
+            destination.write(line)
+            destination.flush()
+    finally:
+        stream.close()
+
+
 def run_with_execution_receipt(
     command: list[str],
     *,
@@ -134,32 +150,38 @@ def run_with_execution_receipt(
     started = perf_counter()
     child_usage = None
     try:
+        process = subprocess.Popen(
+            command,
+            cwd=str(Path(cwd).resolve()) if cwd is not None else None,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+        )
+        if process.stdout is None or process.stderr is None:
+            raise RuntimeError("Child process output pipes are unavailable")
+        stdout_lines: list[str] = []
+        stderr_lines: list[str] = []
+        stdout_thread = Thread(
+            target=_forward_child_output,
+            args=(process.stdout, sys.stdout, stdout_lines),
+        )
+        stderr_thread = Thread(
+            target=_forward_child_output,
+            args=(process.stderr, sys.stderr, stderr_lines),
+        )
+        stdout_thread.start()
+        stderr_thread.start()
         if hasattr(os, "wait4"):
-            with tempfile.TemporaryFile() as stdout_file, tempfile.TemporaryFile() as stderr_file:
-                process = subprocess.Popen(
-                    command,
-                    cwd=str(Path(cwd).resolve()) if cwd is not None else None,
-                    env=env,
-                    stdout=stdout_file,
-                    stderr=stderr_file,
-                )
-                _, status, child_usage = os.wait4(process.pid, 0)
-                stdout_file.seek(0)
-                stderr_file.seek(0)
-                stdout = stdout_file.read().decode("utf-8", errors="replace")
-                stderr = stderr_file.read().decode("utf-8", errors="replace")
-                exit_code = int(os.waitstatus_to_exitcode(status))
+            _, status, child_usage = os.wait4(process.pid, 0)
+            exit_code = int(os.waitstatus_to_exitcode(status))
         else:
-            process = subprocess.Popen(
-                command,
-                cwd=str(Path(cwd).resolve()) if cwd is not None else None,
-                env=env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-            stdout, stderr = process.communicate()
-            exit_code = int(process.returncode)
+            exit_code = int(process.wait())
+        stdout_thread.join()
+        stderr_thread.join()
+        stdout = "".join(stdout_lines)
+        stderr = "".join(stderr_lines)
     except BaseException as exc:
         stdout = ""
         stderr = f"{type(exc).__name__}: {exc}"

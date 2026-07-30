@@ -240,6 +240,8 @@ class AppearanceRefiner:
             None,
         ]
         | None = None,
+        progress_every: int | None = None,
+        progress_callback: Callable[[int, int, int, torch.Tensor], None] | None = None,
     ) -> AppearanceRefinementResult:
         if (
             not frame_indices
@@ -258,6 +260,10 @@ class AppearanceRefiner:
                 "SAGE requires scalar exposure nuisance for the "
                 "exact mapping frame set"
             )
+        if progress_every is not None and (
+            type(progress_every) is not int or progress_every < 1
+        ):
+            raise ValueError("Appearance progress interval must be positive")
 
         random = np.random.default_rng(self.config.seed)
         selected = tuple(
@@ -384,6 +390,21 @@ class AppearanceRefiner:
                 )
                 loss.backward()
                 optimizer.step()
+                should_report_progress = (
+                    step in self.config.milestone_steps
+                    or step == self.config.iterations
+                    or (
+                        progress_every is not None
+                        and step % progress_every == 0
+                    )
+                )
+                if progress_callback is not None and should_report_progress:
+                    progress_callback(
+                        step,
+                        self.config.iterations,
+                        frame_index,
+                        loss.detach(),
+                    )
                 if step in self.config.milestone_steps:
                     milestone_values = {
                         "loss": loss.detach(),

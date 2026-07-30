@@ -61,6 +61,8 @@ from .rendering import (
 
 
 APPEARANCE_RUN_SCHEMA = "sage-refinement-run-v1"
+_DENSE_PRIOR_PROGRESS_EVERY = 10
+_REFINEMENT_PROGRESS_EVERY = 200
 _GEOMETRY_AND_TOPOLOGY_TENSORS = (
     "means3d",
     "log_scales",
@@ -70,6 +72,32 @@ _GEOMETRY_AND_TOPOLOGY_TENSORS = (
     "source_types",
     "source_confidences",
 )
+
+
+def _format_duration(seconds: float) -> str:
+    total_seconds = max(0, round(seconds))
+    minutes, seconds = divmod(total_seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+
+def _report_count_progress(
+    label: str,
+    completed: int,
+    total: int,
+    *,
+    started: float,
+) -> None:
+    elapsed = perf_counter() - started
+    rate = completed / elapsed if elapsed > 0 else 0.0
+    remaining = (total - completed) / rate if rate > 0 else 0.0
+    print(
+        f"SAGE {label}: {completed}/{total} "
+        f"({100 * completed / total:.1f}%) | "
+        f"elapsed {_format_duration(elapsed)} | "
+        f"ETA {_format_duration(remaining)}",
+        flush=True,
+    )
 
 
 def is_mapping_frame(frame_index: int, *, map_every: int) -> bool:
@@ -663,10 +691,33 @@ def run_appearance_refinement(
             config.growth_sources.spnet,
             device=device,
         )
+        dense_prior_started = perf_counter()
+
+        def report_dense_prior(
+            completed: int,
+            total: int,
+            _frame: FrameInputs,
+        ) -> None:
+            if (
+                completed % _DENSE_PRIOR_PROGRESS_EVERY == 0
+                or completed == total
+            ):
+                _report_count_progress(
+                    "dense priors",
+                    completed,
+                    total,
+                    started=dense_prior_started,
+                )
+
+        print(
+            f"SAGE dense priors: preparing {len(mapping_frames)} mapping frames",
+            flush=True,
+        )
         dense_priors = prepare_dense_priors(
             mapping_frames,
             provider,
             refinement.dense_prior,
+            progress_callback=report_dense_prior,
         )
         dense_prior_provenance = _dense_prior_record(
             mapping_frames,
@@ -757,11 +808,37 @@ def run_appearance_refinement(
                 cached=appearance_cache[frame_index],
             )
 
+        refinement_started = perf_counter()
+
+        def report_refinement_progress(
+            step: int,
+            total: int,
+            frame_index: int,
+            loss: torch.Tensor,
+        ) -> None:
+            elapsed = perf_counter() - refinement_started
+            rate = step / elapsed if elapsed > 0 else 0.0
+            remaining = (total - step) / rate if rate > 0 else 0.0
+            print(
+                f"SAGE refinement: {step}/{total} "
+                f"({100 * step / total:.1f}%) | "
+                f"frame {frame_index} | loss {loss.item():.6g} | "
+                f"{rate:.2f} step/s | elapsed {_format_duration(elapsed)} | "
+                f"ETA {_format_duration(remaining)}",
+                flush=True,
+            )
+
+        print(
+            f"SAGE refinement: optimizing {refinement.iterations} steps",
+            flush=True,
+        )
         result = AppearanceRefiner(refinement).optimize(
             model,
             tuple(frame_by_index),
             objective,
             exposure_nuisance=exposure_nuisance,
+            progress_every=_REFINEMENT_PROGRESS_EVERY,
+            progress_callback=report_refinement_progress,
         )
         frozen_names = _GEOMETRY_AND_TOPOLOGY_TENSORS + (
             ("opacity_logits",)

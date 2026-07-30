@@ -223,3 +223,41 @@ def test_refiner_keeps_only_milestone_history_and_updates_model() -> None:
     assert [entry["step"] for entry in result.milestones] == [2, 4]
     assert len(result.selected_frame_indices) == config.iterations
     assert not torch.equal(model.colors, baseline)
+
+
+def test_refiner_reports_intervals_and_milestones_without_history_growth() -> None:
+    model = _TinyAppearanceModel()
+    config = _refinement_config()
+    exposure = AppearanceExposureNuisance((0, 5), config, device="cpu")
+    reports: list[tuple[int, int, int, float]] = []
+
+    def objective(
+        item: _TinyAppearanceModel,
+        _frame_index: int,
+        _step: int,
+    ) -> AppearanceObjective:
+        photo = (item.colors - 0.8).square().mean()
+        return AppearanceObjective(
+            total=photo,
+            terms={"photo": photo},
+            diagnostics={
+                "dense_valid_normal_pixels": photo.new_tensor(4.0),
+                "dense_normal_weight_mass": photo.new_tensor(2.0),
+            },
+        )
+
+    def report(step: int, total: int, frame: int, loss: torch.Tensor) -> None:
+        reports.append((step, total, frame, float(loss)))
+
+    result = AppearanceRefiner(config).optimize(
+        model,
+        (0, 5),
+        objective,
+        exposure_nuisance=exposure,
+        progress_every=3,
+        progress_callback=report,
+    )
+
+    assert [step for step, *_ in reports] == [2, 3, 4]
+    assert all(total == config.iterations for _, total, *_ in reports)
+    assert len(result.steps) == len(config.milestone_steps)

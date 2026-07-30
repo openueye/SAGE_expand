@@ -319,6 +319,7 @@ def run_training(
             f"Invalid partial structure output: {structure_output}"
         )
     if not structure_ready:
+        print("SAGE stage 1/3: structure mapping", flush=True)
         _remove_failed_structure_receipt(destination)
         _run_structure_optimization(
             method,
@@ -341,6 +342,7 @@ def run_training(
     if final_output.exists() and not final_ready:
         raise ValueError(f"Invalid partial final output: {final_output}")
     if not final_ready:
+        print("SAGE stage 2/3: appearance refinement", flush=True)
         run_appearance_refinement(
             runtime,
             source_checkpoint,
@@ -363,6 +365,7 @@ def run_training(
             f"Invalid partial evaluation output: {evaluation_output}"
         )
     if not evaluation_ready:
+        print("SAGE stage 3/3: final evaluation", flush=True)
         run_evaluation(
             runtime,
             final_checkpoint,

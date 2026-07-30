@@ -269,6 +269,7 @@ def evaluate_frames(
     image_metrics: Callable[[torch.Tensor, torch.Tensor], object],
     policy: EvaluationDepthPolicy,
     map_every: int,
+    progress_callback: Callable[[int, FrameInputs], None] | None = None,
 ) -> dict[str, Any]:
     """Run the frozen image and geometry protocol over an ordered frame stream."""
     if type(map_every) is not int or map_every < 1:
@@ -292,6 +293,8 @@ def evaluate_frames(
             },
             "geometry": evaluate_render_output(output, frame.mapping, policy=policy),
         })
+        if progress_callback is not None:
+            progress_callback(len(frame_reports), frame)
     return aggregate_evaluation_frame_reports(
         frame_reports,
         policy=policy,

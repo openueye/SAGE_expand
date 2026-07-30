@@ -26,6 +26,16 @@ from .model import TrainableGaussians
 from .rendering import render
 
 
+_EVALUATION_PROGRESS_EVERY = 25
+
+
+def _format_duration(seconds: float) -> str:
+    total_seconds = max(0, round(seconds))
+    minutes, seconds = divmod(total_seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+
 def run_evaluation(
     config: SageConfig,
     checkpoint: Path,
@@ -91,6 +101,20 @@ def run_evaluation(
             source.start_identity()
         )
         validate_dataset_identity(identity, dataset_identity)
+        evaluation_started = perf_counter()
+
+        def report_evaluation_progress(
+            completed: int,
+            _frame: object,
+        ) -> None:
+            if completed % _EVALUATION_PROGRESS_EVERY == 0:
+                print(
+                    f"SAGE evaluation: {completed} frames rendered | "
+                    f"elapsed {_format_duration(perf_counter() - evaluation_started)}",
+                    flush=True,
+                )
+
+        print("SAGE evaluation: rendering accepted frames", flush=True)
         with torch.no_grad():
             result = evaluate_frames(
                 model,
@@ -99,7 +123,13 @@ def run_evaluation(
                 image_metrics=evaluator,
                 policy=policy,
                 map_every=1,
+                progress_callback=report_evaluation_progress,
             )
+        print(
+            f"SAGE evaluation: complete ({result['frame_count']} frames) | "
+            f"elapsed {_format_duration(perf_counter() - evaluation_started)}",
+            flush=True,
+        )
         receipt = source.prepare_close()
         prepared = True
         source.commit()
