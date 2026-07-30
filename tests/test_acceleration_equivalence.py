@@ -3,6 +3,8 @@ from __future__ import annotations
 import numpy as np
 import torch
 
+from sage.data.rosbag import writer as rosbag_writer
+from sage.data.rosbag.geometry import PoseSample, PoseTrack, RawWorldNormalizer
 from sage.appearance_config import (
     APPEARANCE_REFINEMENT_SCHEMA,
     FIRST_MAPPING_FRAME_EXPOSURE_GAUGE,
@@ -27,7 +29,9 @@ from sage.dense_geometry_objective import (
     dense_geometry_objective,
     prepare_dense_geometry_static,
 )
+from sage.evaluation import EvaluationDepthPolicy, evaluate_render_output
 from sage.losses import mapping_loss
+from sage.rendering import RenderOutput
 
 
 def _mapping(shape: tuple[int, int]) -> MappingObservation:
@@ -261,3 +265,120 @@ def test_refiner_reports_intervals_and_milestones_without_history_growth() -> No
     assert [step for step, *_ in reports] == [2, 3, 4]
     assert all(total == config.iterations for _, total, *_ in reports)
     assert len(result.steps) == len(config.milestone_steps)
+
+
+def _pose(timestamp_ns: int, *, x: float, yaw_radians: float) -> PoseSample:
+    cosine = np.cos(yaw_radians)
+    sine = np.sin(yaw_radians)
+    matrix = np.eye(4, dtype=np.float64)
+    matrix[:3, :3] = np.asarray(
+        [[cosine, -sine, 0.0], [sine, cosine, 0.0], [0.0, 0.0, 1.0]],
+        dtype=np.float64,
+    )
+    matrix[0, 3] = x
+    return PoseSample(timestamp_ns, matrix)
+
+
+def test_batch_pose_interpolation_and_raw_normalization_match_scalar_path() -> None:
+    poses = PoseTrack((
+        _pose(0, x=0.0, yaw_radians=0.0),
+        _pose(10, x=2.0, yaw_radians=np.pi / 2),
+        _pose(20, x=4.0, yaw_radians=np.pi),
+    ))
+    timestamps = np.asarray([0, 5, 10, 15, 20], dtype=np.int64)
+    batched = poses.interpolate_many(timestamps, max_distance_ns=10)
+    scalar = np.stack([
+        poses.interpolate(int(timestamp), max_distance_ns=10)
+        for timestamp in timestamps
+    ])
+    np.testing.assert_allclose(batched, scalar, atol=1e-12, rtol=1e-12)
+
+    points = np.asarray([
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [1.0, 1.0, 0.0],
+        [2.0, 0.0, 0.0],
+        [0.0, 2.0, 0.0],
+    ])
+    offsets = timestamps.astype(np.float64)
+    normalizer = RawWorldNormalizer(
+        poses,
+        np.eye(4),
+        offset_time_scale_ns=1.0,
+        max_pose_distance_ns=10,
+    )
+    actual = normalizer.normalize(
+        points,
+        cloud_timestamp_ns=0,
+        offset_time=offsets,
+    )
+    expected = np.empty_like(points)
+    homogeneous = np.concatenate(
+        [points, np.ones((len(points), 1), dtype=np.float64)],
+        axis=1,
+    )
+    for index, timestamp in enumerate(timestamps):
+        expected[index] = (
+            poses.interpolate(int(timestamp), max_distance_ns=10)
+            @ homogeneous[index]
+        )[:3]
+    np.testing.assert_allclose(actual, expected.astype(np.float32), atol=1e-6, rtol=1e-6)
+
+
+def test_artifact_hashes_reuses_hashes_for_immutable_frame_outputs(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    known = tmp_path / "scene/images/000000.png"
+    fresh = tmp_path / "audit/projection_stats.csv"
+    known.parent.mkdir(parents=True)
+    fresh.parent.mkdir(parents=True)
+    known.write_bytes(b"already-hashed")
+    fresh.write_text("frame_id\n000000\n", encoding="utf-8")
+    calls: list[str] = []
+
+    def fake_sha256(path) -> str:
+        calls.append(path.name)
+        return "f" * 64
+
+    monkeypatch.setattr(rosbag_writer, "sha256_file", fake_sha256)
+    artifacts = rosbag_writer._artifact_hashes(
+        tmp_path,
+        known_hashes={"scene/images/000000.png": "0" * 64},
+    )
+
+    assert artifacts == {
+        "audit/projection_stats.csv": "f" * 64,
+        "scene/images/000000.png": "0" * 64,
+    }
+    assert calls == ["projection_stats.csv"]
+
+
+def test_evaluation_materializes_geometry_scalars_as_python_values() -> None:
+    mapping = MappingObservation(
+        np.asarray([[2.0, 4.0], [0.0, 0.0]], dtype=np.float32),
+        np.asarray([
+            [int(SourceType.LIDAR_SLAM_CENTER), int(SourceType.LIDAR_SLAM_FUSED5)],
+            [255, 255],
+        ], dtype=np.uint8),
+        np.asarray([[1.0, 1.0], [0.0, 0.0]], dtype=np.float32),
+    )
+    output = RenderOutput(
+        rgb=torch.zeros((2, 2, 3), dtype=torch.float32),
+        depth=torch.tensor([[1.8, 0.2], [0.0, 0.0]], dtype=torch.float32),
+        alpha=torch.tensor([[0.9, 0.02], [0.0, 0.0]], dtype=torch.float32),
+    )
+
+    report = evaluate_render_output(
+        output,
+        mapping,
+        policy=EvaluationDepthPolicy(depth_policy="raw-accumulated-v1"),
+    )
+
+    center = report["depth"]["center"]
+    fused = report["depth"]["fused5"]
+    assert center["observation_count"] == 1
+    assert center["render_valid_count"] == 1
+    assert isinstance(center["mae_m"], float)
+    assert fused["render_valid_count"] == 1
+    assert isinstance(report["alpha"]["total"]["finite_count"], int)

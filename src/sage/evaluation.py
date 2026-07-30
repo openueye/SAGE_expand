@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import math
 from typing import Any, Callable, Iterable
 
 import torch
@@ -58,12 +59,77 @@ def _source_masks(target_mapping: MappingObservation, device: torch.device) -> d
     }
 
 
-def _scalar_count(mask: torch.Tensor) -> int:
-    return int(mask.sum().item())
+def _scalar_count(mask: torch.Tensor) -> torch.Tensor:
+    return mask.sum()
 
 
-def _quantile(values: torch.Tensor, q: float) -> float | None:
-    return None if values.numel() == 0 else float(torch.quantile(values, q))
+def _quantile(values: torch.Tensor, q: float) -> torch.Tensor:
+    return (
+        torch.quantile(values, q)
+        if values.numel()
+        else values.new_full((), float("nan"))
+    )
+
+
+def _optional_divide(
+    numerator: torch.Tensor,
+    denominator: torch.Tensor,
+) -> torch.Tensor:
+    numerator_float = numerator.to(dtype=torch.float64)
+    denominator_float = denominator.to(dtype=torch.float64)
+    return torch.where(
+        denominator_float > 0,
+        numerator_float / denominator_float,
+        torch.full_like(numerator_float, float("nan")),
+    )
+
+
+def _materialize_scalar_tensors(value: Any) -> Any:
+    """Move a frame's scalar metrics to the host in one batched transfer."""
+    scalar_tensors: list[torch.Tensor] = []
+    scalar_types: list[torch.dtype] = []
+
+    def collect(item: Any) -> Any:
+        if torch.is_tensor(item) and item.ndim == 0:
+            scalar_tensors.append(item.detach())
+            scalar_types.append(item.dtype)
+            return ("scalar", len(scalar_tensors) - 1)
+        if isinstance(item, dict):
+            return {name: collect(child) for name, child in item.items()}
+        if isinstance(item, list):
+            return [collect(child) for child in item]
+        if isinstance(item, tuple):
+            return tuple(collect(child) for child in item)
+        return item
+
+    template = collect(value)
+    if not scalar_tensors:
+        return template
+    numbers = torch.stack(
+        tuple(tensor.to(dtype=torch.float64) for tensor in scalar_tensors)
+    ).cpu().tolist()
+
+    def restore(item: Any) -> Any:
+        if (
+            isinstance(item, tuple)
+            and len(item) == 2
+            and item[0] == "scalar"
+            and isinstance(item[1], int)
+        ):
+            number = float(numbers[item[1]])
+            dtype = scalar_types[item[1]]
+            if dtype.is_floating_point:
+                return None if math.isnan(number) else number
+            return int(number)
+        if isinstance(item, dict):
+            return {name: restore(child) for name, child in item.items()}
+        if isinstance(item, list):
+            return [restore(child) for child in item]
+        if isinstance(item, tuple):
+            return tuple(restore(child) for child in item)
+        return item
+
+    return restore(template)
 
 
 def _alpha_summary(
@@ -76,20 +142,18 @@ def _alpha_summary(
     finite_mask = observation_mask & torch.isfinite(alpha)
     values = alpha[finite_mask]
     observation_count = _scalar_count(observation_mask)
-    finite_count = int(values.numel())
+    finite_count = _scalar_count(finite_mask)
+    below_a0_count = _scalar_count(finite_mask & (alpha < a0))
     result: dict[str, Any] = {
         "observation_count": observation_count,
         "finite_count": finite_count,
         "missing_alpha_count": observation_count - finite_count,
-        "mean": None if finite_count == 0 else float(values.mean()),
+        "mean": values.mean() if values.numel() else values.new_full((), float("nan")),
         "p10": _quantile(values, 0.10),
         "p50": _quantile(values, 0.50),
         "p90": _quantile(values, 0.90),
-        "below_a0_count": _scalar_count(finite_mask & (alpha < a0)),
-        "below_a0_ratio": (
-            _scalar_count(finite_mask & (alpha < a0)) / observation_count
-            if observation_count else None
-        ),
+        "below_a0_count": below_a0_count,
+        "below_a0_ratio": _optional_divide(below_a0_count, observation_count),
     }
     if include_samples:
         result["_samples"] = values.detach()
@@ -105,13 +169,15 @@ def _hit_summary(
     finite_mask = observation_mask & torch.isfinite(alpha)
     violation = finite_mask & (alpha < target)
     observation_count = _scalar_count(observation_mask)
+    finite_count = _scalar_count(finite_mask)
+    violation_count = _scalar_count(violation)
     return {
         "target": target,
         "observation_count": observation_count,
-        "finite_count": _scalar_count(finite_mask),
-        "missing_alpha_count": observation_count - _scalar_count(finite_mask),
-        "violation_count": _scalar_count(violation),
-        "violation_ratio": _scalar_count(violation) / observation_count if observation_count else None,
+        "finite_count": finite_count,
+        "missing_alpha_count": observation_count - finite_count,
+        "violation_count": violation_count,
+        "violation_ratio": _optional_divide(violation_count, observation_count),
     }
 
 
@@ -131,14 +197,14 @@ def _depth_summary(
     error = (depth - target_depth).abs()
     observation_count = _scalar_count(observation_mask)
     render_valid_count = _scalar_count(render_valid)
-    error_sum = float(error[render_valid].sum())
+    error_sum = error[render_valid].sum()
     return {
         "absolute_error_sum_m": error_sum,
         "observation_count": observation_count,
         "render_valid_count": render_valid_count,
         "missing_support_count": observation_count - render_valid_count,
-        "mae_m": error_sum / render_valid_count if render_valid_count else None,
-        "coverage": render_valid_count / observation_count if observation_count else None,
+        "mae_m": _optional_divide(error_sum, render_valid_count),
+        "coverage": _optional_divide(render_valid_count, observation_count),
     }
 
 
@@ -197,12 +263,12 @@ def evaluate_render_output(
             output.alpha, observation & masks["fused5"], target=policy.hit_target_fused5,
         ),
     }
-    return {
+    return _materialize_scalar_tensors({
         "evaluation_depth_policy": policy.payload(),
         "depth": depth_metrics,
         "alpha": alpha_metrics,
         "hit_margin": hit_metrics,
-    }
+    })
 
 
 def _sum_optional(rows: list[dict[str, Any]], name: str) -> int:

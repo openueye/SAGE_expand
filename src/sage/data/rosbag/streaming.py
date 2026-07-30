@@ -238,10 +238,7 @@ class OdinBagFixedLagResultStream:
             "receipt_schema": "fixed-lag-stream-v1",
             "preparation_profile": self._runtime.profile.name,
             "source": self._runtime.profile.manifest_contract()["source"],
-            "input_files_sha256": {
-                label: sha256_file(path)
-                for label, path in sorted({**self._runtime.input_files, "cam_in_ex.txt": self._runtime.calibration}.items())
-            },
+            "input_files_sha256": dict(pre_input_hashes),
             "producer_identity": deepcopy(self._runtime.producer_identity),
             "queue_capacity": queue_capacity,
             "emitted_limit": emitted_limit if emitted_limit is not None else -1,
@@ -262,6 +259,7 @@ class OdinBagFixedLagResultStream:
             self._runtime.close()
             raise ValueError("ROSBAG inputs changed while the streaming index was built")
         identity["input_files_sha256"] = post_input_hashes
+        self._input_hashes = dict(post_input_hashes)
         self._writer = None
         self._write_through_dir = Path(write_through_dir).resolve() if write_through_dir is not None else None
         self._write_through_non_formal = bool(
@@ -348,6 +346,7 @@ class OdinBagFixedLagResultStream:
                 input_files={**self._runtime.input_files, "cam_in_ex.txt": self._runtime.calibration},
                 producer_identity=self._runtime.producer_identity,
                 non_formal=self._write_through_non_formal,
+                input_hashes=self._input_hashes,
             )
         yield from self._stream.frames()
 

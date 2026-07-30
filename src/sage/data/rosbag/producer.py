@@ -8,6 +8,7 @@ import sqlite3
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from threading import RLock, get_ident
 from typing import Iterable, Iterator
 
 import numpy as np
@@ -115,11 +116,20 @@ class BagInputs:
     input_files: dict[str, Path]
 
 
+@dataclass
+class _StreamingReadConnections:
+    index_queries: sqlite3.Connection
+    image_iteration: sqlite3.Connection
+    shards: dict[str, sqlite3.Connection]
+
+
 class StreamingBagIndex:
     """Disk-backed event index for fixed-lag production.
 
     The index retains only event metadata and row locators. Message payloads are
-    fetched from the source shard when a bounded window needs them.
+    fetched from the source shard when a bounded window needs them. Each calling
+    thread receives persistent SQLite read handles so fixed-lag lookups do
+    not reopen a database for every payload or pose bracket.
     """
 
     def __init__(self, rosbag_dir: Path, profile: PreparationProfile) -> None:
@@ -136,14 +146,23 @@ class StreamingBagIndex:
         os.close(index_fd)
         self._index_path = Path(index_name)
         self._closed = False
+        self._reader_lock = RLock()
+        self._readers_by_thread: dict[int, _StreamingReadConnections] = {}
         self._topic_identities: dict[str, dict[str, object]] = {}
         self._source_topic = profile.source.topic
         self._source_frame_ids: set[str] = set()
         self._odom_frame_ids: set[str] = set()
         self._odom_child_frame_ids: set[str] = set()
         self._source_layouts: list[dict[str, object]] = []
+        self._pose_samples: list[PoseSample] | None = (
+            [] if profile.source.mode == "LIDAR_RAW" else None
+        )
+        self._pose_track: PoseTrack | None = None
         try:
             self._build(profile)
+            if self._pose_samples is not None:
+                self._pose_samples.sort(key=lambda sample: sample.timestamp_ns)
+                self._pose_track = PoseTrack(tuple(self._pose_samples))
         except BaseException:
             self._index_path.unlink(missing_ok=True)
             raise
@@ -169,6 +188,12 @@ class StreamingBagIndex:
         if not self._source_layouts:
             raise ValueError("Streaming bag source layout is unavailable")
         return self._source_layouts[0]
+
+    @property
+    def pose_track(self) -> PoseTrack:
+        if self._pose_track is None:
+            raise RuntimeError("Streaming pose track is only retained for RAW LiDAR normalization")
+        return self._pose_track
 
     def _build(self, profile: PreparationProfile) -> None:
         required_topics = (IMAGE_TOPIC, ODOMETRY_TOPIC, profile.source.topic)
@@ -215,7 +240,12 @@ class StreamingBagIndex:
                         for row_id, data in rows:
                             payload = bytes(data)
                             timestamp_ns = _header_timestamp(topic, payload)
-                            self._validate_payload(topic, payload, profile)
+                            self._validate_payload(
+                                topic,
+                                payload,
+                                profile,
+                                timestamp_ns=timestamp_ns,
+                            )
                             batch.append((topic, timestamp_ns, file_index, int(row_id), topic_id, shard.name))
                             if len(batch) >= 512:
                                 connection.executemany(
@@ -253,7 +283,14 @@ class StreamingBagIndex:
             "frame_ids": sorted(self._source_frame_ids),
         }]
 
-    def _validate_payload(self, topic: str, payload: bytes, profile: PreparationProfile) -> None:
+    def _validate_payload(
+        self,
+        topic: str,
+        payload: bytes,
+        profile: PreparationProfile,
+        *,
+        timestamp_ns: int,
+    ) -> None:
         if topic == profile.source.topic:
             message = parse_pointcloud2(payload)
             layout = _point_layout(message)
@@ -264,22 +301,56 @@ class StreamingBagIndex:
             message = parse_odometry(payload)
             self._odom_frame_ids.add(str(message["frame_id"]))
             self._odom_child_frame_ids.add(str(message["child_frame_id"]))
+            if self._pose_samples is not None:
+                self._pose_samples.append(PoseSample(
+                    timestamp_ns,
+                    pose_to_matrix(message["position"], message["orientation_xyzw"]),
+                ))
+
+    def _readers(self) -> _StreamingReadConnections:
+        thread_id = get_ident()
+        with self._reader_lock:
+            readers = self._readers_by_thread.get(thread_id)
+            if readers is None:
+                if self._closed:
+                    raise RuntimeError("Streaming bag index is closed")
+                readers = _StreamingReadConnections(
+                    index_queries=sqlite3.connect(
+                        str(self._index_path),
+                        check_same_thread=False,
+                    ),
+                    image_iteration=sqlite3.connect(
+                        str(self._index_path),
+                        check_same_thread=False,
+                    ),
+                    shards={},
+                )
+                self._readers_by_thread[thread_id] = readers
+            return readers
+
+    def _shard_reader(self, shard_name: str) -> sqlite3.Connection:
+        readers = self._readers()
+        connection = readers.shards.get(shard_name)
+        if connection is None:
+            connection = sqlite3.connect(
+                str(self.root / shard_name),
+                check_same_thread=False,
+            )
+            readers.shards[shard_name] = connection
+        return connection
 
     def _row(self, row: tuple[object, ...]) -> BagMessage:
         _, timestamp_ns, file_index, row_id, topic_id, shard_name = row
-        shard = self.root / str(shard_name)
-        with sqlite3.connect(str(shard)) as connection:
-            data = connection.execute(
-                "SELECT data FROM messages WHERE topic_id = ? AND rowid = ?",
-                (int(topic_id), int(row_id)),
-            ).fetchone()
+        data = self._shard_reader(str(shard_name)).execute(
+            "SELECT data FROM messages WHERE topic_id = ? AND rowid = ?",
+            (int(topic_id), int(row_id)),
+        ).fetchone()
         if data is None:
             raise ValueError(f"Streaming bag row disappeared: {shard_name}:{row_id}")
         return BagMessage(int(timestamp_ns), int(file_index), int(row_id), bytes(data[0]))
 
     def _query_one(self, sql: str, params: tuple[object, ...]) -> tuple[object, ...] | None:
-        with sqlite3.connect(str(self._index_path)) as connection:
-            return connection.execute(sql, params).fetchone()
+        return self._readers().index_queries.execute(sql, params).fetchone()
 
     def image_count(self) -> int:
         row = self._query_one("SELECT COUNT(*) FROM events WHERE topic = ?", (IMAGE_TOPIC,))
@@ -291,14 +362,13 @@ class StreamingBagIndex:
             "SELECT topic, timestamp_ns, storage_file_index, storage_row_id, topic_id, shard_name "
             "FROM events WHERE topic = ? ORDER BY timestamp_ns, storage_file_index, storage_row_id"
         )
-        with sqlite3.connect(str(self._index_path)) as connection:
-            rows = connection.execute(sql, (IMAGE_TOPIC,))
-            for image_index, row in enumerate(rows):
-                if image_index < image_start:
-                    continue
-                if stop is not None and image_index >= stop:
-                    break
-                yield image_index, self._row(row)
+        rows = self._readers().image_iteration.execute(sql, (IMAGE_TOPIC,))
+        for image_index, row in enumerate(rows):
+            if image_index < image_start:
+                continue
+            if stop is not None and image_index >= stop:
+                break
+            yield image_index, self._row(row)
 
     def nearest_source(self, timestamp_ns: int, *, max_dt_ns: int) -> BagMessage | None:
         return self.nearest(self._source_topic, timestamp_ns, max_dt_ns=max_dt_ns)
@@ -345,6 +415,14 @@ class StreamingBagIndex:
         if self._closed:
             return
         self._closed = True
+        with self._reader_lock:
+            readers = tuple(self._readers_by_thread.values())
+            self._readers_by_thread.clear()
+        for handles in readers:
+            handles.index_queries.close()
+            handles.image_iteration.close()
+            for connection in handles.shards.values():
+                connection.close()
         try:
             self._index_path.unlink(missing_ok=True)
         except OSError as exc:
@@ -361,11 +439,13 @@ class IndexedPoseTrack:
 
     @property
     def coverage_ns(self) -> tuple[int, int]:
-        with sqlite3.connect(str(self._index._index_path)) as connection:
-            first, last = connection.execute(
-                "SELECT MIN(timestamp_ns), MAX(timestamp_ns) FROM events WHERE topic = ?",
-                (ODOMETRY_TOPIC,),
-            ).fetchone()
+        row = self._index._query_one(
+            "SELECT MIN(timestamp_ns), MAX(timestamp_ns) FROM events WHERE topic = ?",
+            (ODOMETRY_TOPIC,),
+        )
+        if row is None:
+            raise ValueError("Odometry topic has no timestamp coverage")
+        first, last = row
         if first is None or last is None:
             raise ValueError("Odometry topic has no timestamp coverage")
         return int(first), int(last)
@@ -601,7 +681,7 @@ def prepare_streaming_bag_runtime(
         raw_normalizer = None
         if profile.source.mode == "LIDAR_RAW":
             raw_normalizer = RawWorldNormalizer(
-                IndexedPoseTrack(index),
+                index.pose_track,
                 np.eye(4),
                 offset_time_scale_ns=1_000_000_000.0,
                 max_pose_distance_ns=int(round(profile.odometry_max_dt_ms * 1_000_000)),

@@ -351,8 +351,10 @@ class MappingEngine:
                         rendered_alpha=output.alpha,
                         policy=self.loss_policy,
                     )
-                    if not bool(torch.isfinite(loss)):
-                        raise FloatingPointError(f"Non-finite mapping loss at frame {selected_frame.stem}")
+                    torch._assert_async(
+                        torch.isfinite(loss),
+                        f"Non-finite mapping loss at frame {selected_frame.stem}",
+                    )
                     loss.backward()
                     optimizer.step()
                     completed_steps = iteration + 1
@@ -378,7 +380,6 @@ class MappingEngine:
                             newborn_protected_id_chunks.append(prune_result.newborn_protected_ids)
                         for name, count in prune_result.mature_opacity_removed_by_source.items():
                             mature_opacity_removed_by_source[name] += count
-                    final_loss = float(loss.detach())
                     final_terms = terms
                 if final_terms is None:
                     raise RuntimeError("Mapping commit completed without a final loss")
