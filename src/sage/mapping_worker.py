@@ -37,12 +37,21 @@ from .rendering import capture_renderer_identity, render
 
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs" / "sage.yaml"
+_MAPPING_PROGRESS_EVERY = 50
 
 
 def _report_frames(frames, *, expected_total: int):
     total = str(expected_total) if expected_total > 0 else "?"
-    for frame in frames:
-        print(f"SAGE mapping frame {frame.index + 1}/{total}: {frame.stem}", flush=True)
+    for completed, frame in enumerate(frames, start=1):
+        if (
+            completed == 1
+            or completed % _MAPPING_PROGRESS_EVERY == 0
+            or (expected_total > 0 and completed == expected_total)
+        ):
+            print(
+                f"SAGE mapping frame {frame.index + 1}/{total}: {frame.stem}",
+                flush=True,
+            )
         yield frame
 
 

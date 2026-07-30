@@ -26,7 +26,7 @@ from .model import TrainableGaussians
 from .rendering import render
 
 
-_EVALUATION_PROGRESS_EVERY = 25
+_EVALUATION_PROGRESS_EVERY = 50
 
 
 def _format_duration(seconds: float) -> str:
