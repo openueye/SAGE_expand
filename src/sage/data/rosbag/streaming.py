@@ -182,6 +182,7 @@ class OdinBagFixedLagResultStream:
         emitted_limit: int | None = None,
         confirm_raw_offset_time_seconds_from_scan_start: bool = False,
         confirm_base_from_lidar_identity: bool = False,
+        require_clean_worktree: bool = False,
         write_through_dir=None,
     ) -> None:
         from .producer import _bag_shards, iter_projected_centers, prepare_streaming_bag_runtime
@@ -216,6 +217,7 @@ class OdinBagFixedLagResultStream:
             non_formal=bool(non_formal or image_start != 0 or image_limit is not None),
             confirm_raw_offset_time_seconds_from_scan_start=confirm_raw_offset_time_seconds_from_scan_start,
             confirm_base_from_lidar_identity=confirm_base_from_lidar_identity,
+            require_clean_worktree=require_clean_worktree,
         )
         self._iter_projected_centers = iter_projected_centers
         self._receipt = {

@@ -1,22 +1,12 @@
 # SAGE Expand
 
-`SAGE_expand` is the engineering-acceleration copy of `MyNet/SAGE`. It keeps
-the mapping and appearance objectives, schedules, and final evaluation
-semantics, but does not treat interruption recovery, per-step histories, or
-bitwise reproducibility as optimization constraints.
+`SAGE_expand` is the thesis engineering variant of SAGE (Structure-Anchored
+Gaussian Enhancement). One command turns a calibrated finite Odin ROSBAG, or a
+compatible Prepared Scene, into a structure map, an appearance-refined final
+map, and an evaluation over every accepted frame. LiDAR remains the metric
+authority; SPNet supplies guarded dense-normal supervision only.
 
-SAGE (Structure-Anchored Gaussian Enhancement) is the complete multi-sensor
-Gaussian-mapping method used in this thesis. From either a calibrated finite
-Odin recording or a compatible Prepared Scene, one command builds the Gaussian
-structure, refines its appearance while preserving geometry and topology,
-publishes the final checkpoint, and evaluates every accepted input frame.
-
-Sparse LiDAR remains the metric authority. SPNet depth is locally aligned to
-LiDAR and contributes guarded dense-normal supervision instead of dense metric
-depth targets. Per-frame exposure variables are bounded training nuisances and
-are not applied to official evaluation images.
-
-## Installation
+## Install
 
 ```bash
 git clone https://github.com/openueye/SAGE.git
@@ -24,63 +14,36 @@ cd SAGE
 conda-lock install --name sage conda-lock.yml
 conda run -n sage python tools/install_locked_pip.py --environment sage
 conda run -n sage python tools/build_renderer.py
-conda activate sage
 ```
 
-The included renderer build targets CUDA compute capability 8.9. Set
-`RENDERER_CUDA_ARCH_LIST` and rebuild for a different architecture. The
-renderer manifest records and validates the selected build identity.
+The bundled renderer targets CUDA capability 8.9. Set
+`RENDERER_CUDA_ARCH_LIST` and rebuild it for another GPU architecture.
 
 ## Models
 
-SPNet source and weights are not redistributed. Install the pinned source and
-import locally obtained model files:
+Install the pinned SPNet source and locally obtained weights:
 
 ```bash
 git clone https://github.com/Wang-xjtu/SPNet.git third_party/SPNet
 git -C third_party/SPNet checkout b836bd044517b33d3737094acd6a1f09c2362f04
-export SAGE_MODEL_ROOT=/path/to/sage-models
+export SAGE_MODEL_ROOT=/path/to/sage-models  # required only while importing
 python tools/download_models.py spnet-large-300 --source /path/to/Large_300.pth
 python tools/download_models.py alexnet-imagenet --source /path/to/alexnet-owt-7be5be79.pth
 ```
 
-Set `SAGE_SPNET_ROOT` only when the pinned SPNet checkout is stored elsewhere.
+Training reads its model directory from the YAML configuration, for example:
 
-## Inputs
-
-SAGE supports two equivalent complete input paths:
-
-- a finite Odin ROSBAG plus its `cam_in_ex.txt` camera/LiDAR calibration;
-- a compatible Prepared Scene, including public datasets converted to this
-  contract.
-
-Both paths run structure optimization, appearance refinement, and final
-evaluation. A ROSBAG can be converted once for reuse:
-
-```bash
-python tools/prepare_dataset.py \
-  --rosbag /path/to/odin1-bag \
-  --calibration /path/to/cam_in_ex.txt \
-  --output /path/to/prepared
+```yaml
+runtime:
+  model_root: ../../SAGE-models
+  require_clean_worktree: false
 ```
 
-The producer processes the bag to EOF and publishes only a complete scene with
-source, transform, frame-order, and content identities. Passing
-`--write-through PATH` to ROSBAG training records the same representation while
-the end-to-end run proceeds.
+The path is relative to the YAML file and overrides `SAGE_MODEL_ROOT`.
+`third_party/SPNet` is used by default; set `SAGE_SPNET_ROOT` only for a
+different verified checkout.
 
-## Configuration
-
-`configs/sage.yaml` is the only method configuration. Its `mapping`,
-`refinement`, and `evaluation` sections describe successive parts of one
-workflow; refinement is not a separate mode.
-
-Unknown, missing, or incompatible fields are rejected. The method has one
-deterministic seeded schedule and no alternative experimental branches.
-
-## Training
-
-Run the complete method from one command:
+## Run
 
 ```bash
 sage train \
@@ -91,88 +54,32 @@ sage train \
   --device cuda
 ```
 
-For a Prepared Scene, replace the two ROSBAG arguments with:
+Use `--prepared-scene /path/to/prepared-scene` instead of the ROSBAG arguments
+when replaying a prepared input. Add `--preflight` to validate the input, CUDA,
+renderer, models, and output path without training.
 
-```bash
-sage train \
-  --config configs/sage.yaml \
-  --prepared-scene /path/to/prepared-scene \
-  --output outputs/sage \
-  --device cuda
-```
-
-Add `--preflight` to validate the complete configuration, selected input,
-CUDA runtime, models, renderer, and output path without training.
-
-The output is atomic at each recoverable boundary:
+Training runs mapping, appearance refinement, and final evaluation in order:
 
 ```text
 outputs/sage/
-├── structure/
-│   ├── checkpoint.pt
-│   ├── map.ply
-│   └── run_manifest.json
-├── final/
-│   ├── appearance_checkpoint.pt
-│   ├── appearance_map.ply
-│   └── run_manifest.json
-├── evaluation/
-│   ├── evaluation.json
-│   └── run_manifest.json
+├── structure/{checkpoint.pt, map.ply, run_manifest.json}
+├── structure.execution.json
+├── final/{appearance_checkpoint.pt, appearance_map.ply, run_manifest.json}
+├── evaluation/{evaluation.json, run_manifest.json}
 └── run_manifest.json
 ```
 
-`final/appearance_checkpoint.pt` is the final SAGE checkpoint. Effectiveness is
-checked once by the final evaluation instead of repeatedly evaluating and
-serializing intermediate refinement milestones. Existing output paths are
-never silently overwritten.
+Use `sage evaluate --checkpoint outputs/sage/final/appearance_checkpoint.pt`
+with the same input choice to publish a separate evaluation output. Existing
+outputs are never silently overwritten.
 
-## Acceleration scope
+## Experiment identity
 
-- Mapping keeps the same frame selection, optimization schedule, growth,
-  pruning, losses, and iteration counts as `MyNet/SAGE`.
-- Appearance refinement caches immutable frame targets and geometry terms,
-  avoids duplicate photometric/diagnostic work, and records only milestone
-  summaries rather than synchronizing every optimizer step.
-- The CUDA renderer emits accumulated depth and alpha with RGB in one
-  visibility pass for no-gradient growth and evaluation. Training retains the
-  differentiable depth pass required by LiDAR and dense-normal losses.
-- Baseline, candidate, exposure-corrected, and milestone evaluations are not
-  duplicated inside refinement; the workflow's final evaluation remains the
-  validity check.
+YAML fields are strict. The configuration SHA-256, input identities, model
+hashes, renderer identity, source-state hash, and `worktree_dirty` flag are
+recorded with each run. A dirty checkout is allowed by default; set
+`runtime.require_clean_worktree: true` to reject it during preflight and
+mapping. Changing the configuration while a run is active is always rejected.
 
-## Evaluation
-
-Training performs final evaluation automatically. To evaluate an existing
-final checkpoint against any compatible input, use the same input choice:
-
-```bash
-sage evaluate \
-  --config configs/sage.yaml \
-  --checkpoint outputs/sage/final/appearance_checkpoint.pt \
-  --rosbag /path/to/odin-bag \
-  --calibration /path/to/cam_in_ex.txt \
-  --output outputs/sage_evaluation \
-  --device cuda
-```
-
-Use `--prepared-scene /path/to/prepared-scene` instead for the second input
-path. Evaluation discovers and processes all accepted frames emitted by the
-input; it contains no dataset-specific frame list or assumed frame count.
-
-`python -m sage` exposes the same `train` and `evaluate` commands.
-
-## Result contract
-
-Final checkpoints retain input/configuration metadata and verify that
-appearance refinement leaves geometry and topology frozen. Exact replay,
-per-step histories, intermediate recovery artifacts, and bitwise-identical
-results are not goals of this acceleration copy.
-
-Official image and geometry metrics use the native final map without learned
-exposure correction. Exposure-corrected mapping-frame metrics are reported
-separately as diagnostics.
-
-This release targets finite, calibrated scenes and produces one scene-specific
-checkpoint per run. It is not validated for live ROS2 control, real-time
-deployment, resource-constrained hardware, or safety-critical navigation.
+This project targets finite, calibrated scenes. It is not a real-time ROS2 or
+safety-critical navigation system.

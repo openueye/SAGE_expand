@@ -47,6 +47,8 @@ _ROOT_FIELDS = {
     "refinement",
     "evaluation",
 }
+_OPTIONAL_ROOT_FIELDS = {"runtime"}
+_RUNTIME_FIELDS = {"model_root", "require_clean_worktree"}
 
 
 def _section(
@@ -58,6 +60,16 @@ def _section(
     if not isinstance(value, dict) or set(value) != fields:
         raise ValueError(
             f"SAGE {name} fields must be exactly: {', '.join(sorted(fields))}"
+        )
+    return value
+
+
+def _runtime_section(payload: dict[str, Any]) -> dict[str, Any]:
+    value = payload.get("runtime", {})
+    if not isinstance(value, dict) or set(value) - _RUNTIME_FIELDS:
+        raise ValueError(
+            "SAGE runtime fields must be limited to: "
+            + ", ".join(sorted(_RUNTIME_FIELDS))
         )
     return value
 
@@ -110,6 +122,7 @@ class SageMethodConfig:
     mapping: dict[str, Any]
     refinement: dict[str, Any]
     evaluation: dict[str, Any]
+    runtime: dict[str, Any]
 
     @classmethod
     def load(cls, path: Path) -> "SageMethodConfig":
@@ -118,10 +131,15 @@ class SageMethodConfig:
             payload = yaml.safe_load(source.read_text(encoding="utf-8"))
         except (OSError, yaml.YAMLError) as exc:
             raise ValueError(f"Cannot read SAGE configuration: {source}") from exc
-        if not isinstance(payload, dict) or set(payload) != _ROOT_FIELDS:
+        if (
+            not isinstance(payload, dict)
+            or not _ROOT_FIELDS <= set(payload) <= _ROOT_FIELDS | _OPTIONAL_ROOT_FIELDS
+        ):
             raise ValueError(
-                "SAGE configuration must define exactly: "
+                "SAGE configuration must define: "
                 + ", ".join(sorted(_ROOT_FIELDS))
+                + "; optional fields: "
+                + ", ".join(sorted(_OPTIONAL_ROOT_FIELDS))
             )
         if type(payload["seed"]) is not int or payload["seed"] < 0:
             raise ValueError("SAGE seed must be a non-negative integer")
@@ -185,6 +203,7 @@ class SageMethodConfig:
                 "hit_target_fused",
             },
         )
+        runtime = _runtime_section(payload)
         config = cls(
             path=source,
             seed=payload["seed"],
@@ -193,6 +212,7 @@ class SageMethodConfig:
             mapping=mapping,
             refinement=refinement,
             evaluation=evaluation,
+            runtime=runtime,
         )
         config._validate()
         return config
@@ -200,8 +220,27 @@ class SageMethodConfig:
     def _validate(self) -> None:
         if self.evaluation["frame_selection"] != "all":
             raise ValueError("SAGE evaluation must use all accepted input frames")
+        self.runtime_model_root()
+        self.runtime_require_clean_worktree()
         self.refinement_config()
         self._structure_parts()
+
+    def runtime_model_root(self) -> Path | None:
+        value = self.runtime.get("model_root")
+        if value is None:
+            return None
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("SAGE runtime.model_root must be a non-empty path")
+        root = Path(value).expanduser()
+        if not root.is_absolute():
+            root = self.path.parent / root
+        return root.resolve()
+
+    def runtime_require_clean_worktree(self) -> bool:
+        value = self.runtime.get("require_clean_worktree", False)
+        if type(value) is not bool:
+            raise ValueError("SAGE runtime.require_clean_worktree must be a boolean")
+        return value
 
     def _structure_parts(self) -> dict[str, object]:
         growth = _section(
@@ -269,6 +308,7 @@ class SageMethodConfig:
         }
 
     def _scene(self, source: SageInput) -> SceneConfig:
+        require_clean_worktree = self.runtime_require_clean_worktree()
         if source.kind == "prepared_scene":
             scene = PreparedScene.from_root(source.root).config
             return replace(
@@ -276,6 +316,7 @@ class SageMethodConfig:
                 resize_width=self.input["resize_width"],
                 resize_height=self.input["resize_height"],
                 stream_queue_size=self.input["stream_queue_size"],
+                require_clean_worktree=require_clean_worktree,
             )
         return SceneConfig(
             scene_dir=None,
@@ -298,6 +339,7 @@ class SageMethodConfig:
             preparation_profile="odin1-slam-world-native-v1",
             source_mode="SLAM_WORLD",
             fusion_policy="slam-world-centered-5-v1",
+            require_clean_worktree=require_clean_worktree,
         )
 
     def resolve(
@@ -335,6 +377,7 @@ class SageMethodConfig:
                 opacity=self.mapping["initial_opacity"],
             ),
             loss=parts["loss"],
+            model_root=self.runtime_model_root(),
         )
 
     def refinement_config(self) -> AppearanceRefinementConfig:

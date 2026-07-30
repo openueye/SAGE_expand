@@ -19,7 +19,7 @@ mapping:
   map_every: 5
   keyframe_every: 5
   iterations: 90
-  prune_every: 30
+  prune_every: 90
   prune_stop_after: 90
   learning_rates:
     means3d: 0.00016

@@ -231,6 +231,7 @@ class OdinBagFixedLagFrameSource:
                 config.confirm_raw_offset_time_seconds_from_scan_start
             ),
             confirm_base_from_lidar_identity=config.confirm_base_from_lidar_identity,
+            require_clean_worktree=config.require_clean_worktree,
             write_through_dir=config.write_through_dir,
         )
         self._config = config

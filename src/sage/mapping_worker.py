@@ -58,7 +58,11 @@ def _report_frames(frames, *, expected_total: int):
 def _build_spnet_provider(config: SageConfig, *, device: str) -> SPNetEvidenceProvider | None:
     if isinstance(config.growth_sources.spnet, SPNetDisabledConfig):
         return None
-    return OnlineSPNetProvider(config.growth_sources.spnet, device=device)
+    return OnlineSPNetProvider(
+        config.growth_sources.spnet,
+        device=device,
+        model_root=config.model_root,
+    )
 
 
 def _dependency_identity(
@@ -117,7 +121,7 @@ def train(
     config: SageConfig,
     *,
     device: str,
-    require_clean_code: bool = True,
+    require_clean_code: bool | None = None,
 ) -> Path:
     if not str(device).startswith("cuda") or not torch.cuda.is_available():
         raise ValueError("SAGE training requires an available CUDA device")
@@ -125,9 +129,16 @@ def train(
     np.random.seed(config.seed)
     torch.manual_seed(config.seed)
     torch.cuda.manual_seed_all(config.seed)
+    require_clean = (
+        config.scene.require_clean_worktree
+        if require_clean_code is None
+        else require_clean_code
+    )
+    if type(require_clean) is not bool:
+        raise ValueError("require_clean_code must be a boolean when provided")
 
     renderer_identity = capture_renderer_identity()
-    metric_evaluator = ImageMetricEvaluator(device)
+    metric_evaluator = ImageMetricEvaluator(device, model_root=config.model_root)
     spnet_provider = _build_spnet_provider(config, device=device)
     dependencies = _dependency_identity(
         renderer_identity,
@@ -139,7 +150,7 @@ def train(
     input_identity = RunInputIdentity.capture(
         config,
         dependencies=dependencies,
-        require_clean=require_clean_code,
+        require_clean=require_clean,
         frame_source=source,
     )
     source.start_identity()
@@ -195,7 +206,6 @@ def _verify(
 ) -> int:
     from .verify import execution_preflight, verify
 
-    report = verify(require_models=require_models)
     config = _resolved_config(
         config_path,
         output=None,
@@ -203,6 +213,11 @@ def _verify(
         data_root=data_root,
         calibration=calibration,
         write_through=write_through,
+    )
+    report = verify(
+        require_models=require_models,
+        model_root=config.model_root,
+        require_clean_worktree=config.scene.require_clean_worktree,
     )
     report["config_sha256"] = sha256_file(config.config_path)
     report["config"] = config.manifest_dict()
@@ -309,7 +324,11 @@ def _train_preflight(
     receipt_path = _execution_receipt_path(config.output_dir)
     if receipt_path.exists():
         raise ValueError(f"Refusing an existing training execution receipt: {receipt_path}")
-    report = verify(require_models=True)
+    report = verify(
+        require_models=True,
+        model_root=config.model_root,
+        require_clean_worktree=config.scene.require_clean_worktree,
+    )
     report["config_sha256"] = sha256_file(config.config_path)
     report["config"] = config.manifest_dict()
     report["dataset_identity"] = _frame_source_identity(config)

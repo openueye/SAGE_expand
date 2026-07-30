@@ -325,7 +325,7 @@ class RunInputIdentity:
     @classmethod
     def capture(
         cls, config: SageConfig, *, dependencies: DependencyIdentity,
-        require_clean: bool = True, frame_source: FrameSource | None = None,
+        require_clean: bool = False, frame_source: FrameSource | None = None,
     ) -> "RunInputIdentity":
         scene = PreparedScene(config.scene) if config.scene.input_adapter == "prepared-scene-v2" else None
         owns_source = frame_source is None

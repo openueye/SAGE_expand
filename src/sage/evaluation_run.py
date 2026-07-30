@@ -83,7 +83,7 @@ def run_evaluation(
             checkpoint_payload,
             device=device,
         )
-        evaluator = ImageMetricEvaluator(device)
+        evaluator = ImageMetricEvaluator(device, model_root=config.model_root)
         policy = EvaluationDepthPolicy(
             depth_policy=config.mapping.evaluation_depth_policy,
             min_alpha=config.mapping.evaluation_min_alpha,

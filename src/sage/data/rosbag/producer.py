@@ -587,6 +587,7 @@ def prepare_bag_runtime(
     non_formal: bool,
     confirm_raw_offset_time_seconds_from_scan_start: bool,
     confirm_base_from_lidar_identity: bool,
+    require_clean_worktree: bool = False,
 ) -> PreparedBagRuntime:
     profile = profile_for_name(preparation_profile)
     bag_root = Path(rosbag_dir).resolve()
@@ -633,8 +634,8 @@ def prepare_bag_runtime(
         "offset_time_seconds_from_scan_start": bool(confirm_raw_offset_time_seconds_from_scan_start),
         "T_base_from_lidar_identity": bool(confirm_base_from_lidar_identity),
     }
-    if identity["dirty"] and not non_formal:
-        raise ValueError("Dirty SAGE checkout may only produce non_formal=true diagnostics")
+    if require_clean_worktree and identity["dirty"]:
+        raise ValueError("Clean worktree required")
     return PreparedBagRuntime(
         profile=profile,
         bag=bag,
@@ -657,6 +658,7 @@ def prepare_streaming_bag_runtime(
     non_formal: bool,
     confirm_raw_offset_time_seconds_from_scan_start: bool,
     confirm_base_from_lidar_identity: bool,
+    require_clean_worktree: bool = False,
 ) -> StreamingBagRuntime:
     profile = profile_for_name(preparation_profile)
     bag_root = Path(rosbag_dir).resolve()
@@ -707,8 +709,8 @@ def prepare_streaming_bag_runtime(
             "offset_time_seconds_from_scan_start": bool(confirm_raw_offset_time_seconds_from_scan_start),
             "T_base_from_lidar_identity": bool(confirm_base_from_lidar_identity),
         }
-        if identity["dirty"] and not non_formal:
-            raise ValueError("Dirty SAGE checkout may only produce non_formal=true diagnostics")
+        if require_clean_worktree and identity["dirty"]:
+            raise ValueError("Clean worktree required")
         return StreamingBagRuntime(
             index,
             profile=profile,

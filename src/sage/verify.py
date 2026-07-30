@@ -105,7 +105,11 @@ def execution_preflight(config: object, *, device: str = "cuda") -> dict[str, ob
         ))
     ):
         raise RuntimeError("CUDA renderer preflight returned an invalid output")
-    spnet = OnlineSPNetProvider(config.growth_sources.spnet, device=device)
+    spnet = OnlineSPNetProvider(
+        config.growth_sources.spnet,
+        device=device,
+        model_root=config.model_root,
+    )
     evidence = spnet.evidence_for(frame)
     if evidence.depth_m.shape != (height, width):
         raise RuntimeError("SPNet preflight returned an invalid output")
@@ -116,7 +120,12 @@ def execution_preflight(config: object, *, device: str = "cuda") -> dict[str, ob
     }
 
 
-def verify(*, require_models: bool = False) -> dict[str, object]:
+def verify(
+    *,
+    require_models: bool = False,
+    model_root: Path | None = None,
+    require_clean_worktree: bool = False,
+) -> dict[str, object]:
     package_path = Path(sage.__file__).resolve().parent
     expected_package = (ROOT / "src" / "sage").resolve()
     if package_path != expected_package:
@@ -133,7 +142,7 @@ def verify(*, require_models: bool = False) -> dict[str, object]:
     _verify_conda_prefix()
 
     dirty = bool(_git("status", "--porcelain"))
-    if dirty:
+    if require_clean_worktree and dirty:
         raise RuntimeError("Clean worktree required")
 
     from .metrics import _calibration_path
@@ -152,19 +161,29 @@ def verify(*, require_models: bool = False) -> dict[str, object]:
 
     renderer_package = _load_renderer_extension()
     renderer_identity = capture_renderer_identity()
-    model_root_value = os.environ.get("SAGE_MODEL_ROOT")
+    resolved_model_root = (
+        Path(model_root).expanduser().resolve()
+        if model_root is not None
+        else (
+            Path(os.environ["SAGE_MODEL_ROOT"]).expanduser().resolve()
+            if os.environ.get("SAGE_MODEL_ROOT")
+            else None
+        )
+    )
     model_paths: dict[str, str | None] = {SPNET_MODEL_ID: None, ALEXNET_MODEL_ID: None}
-    if require_models and not model_root_value:
-        raise RuntimeError("SAGE_MODEL_ROOT is required when --require-models is set")
+    if require_models and resolved_model_root is None:
+        raise RuntimeError(
+            "A model root is required when --require-models is set; "
+            "configure runtime.model_root or SAGE_MODEL_ROOT"
+        )
     registry = ModelRegistry.load(default_registry_path())
     model_identities = {
         model_id: {"path": None, "sha256": registry.require(model_id).sha256}
         for model_id in model_paths
     }
-    if model_root_value:
-        model_root = Path(model_root_value).resolve()
+    if resolved_model_root is not None:
         model_paths = {
-            model_id: str(registry.resolve(model_id, model_root=model_root))
+            model_id: str(registry.resolve(model_id, model_root=resolved_model_root))
             for model_id in model_paths
         }
         model_identities = {

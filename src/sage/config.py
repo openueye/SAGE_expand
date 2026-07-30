@@ -49,13 +49,18 @@ class SceneConfig:
     fusion_policy: str | None = None
     confirm_raw_offset_time_seconds_from_scan_start: bool = False
     confirm_base_from_lidar_identity: bool = False
+    require_clean_worktree: bool = False
 
     def __post_init__(self) -> None:
         if (
             type(self.confirm_raw_offset_time_seconds_from_scan_start) is not bool
             or type(self.confirm_base_from_lidar_identity) is not bool
+            or type(self.require_clean_worktree) is not bool
         ):
-            raise ValueError("RAW semantics confirmations must be JSON booleans")
+            raise ValueError(
+                "RAW semantics confirmations and require_clean_worktree "
+                "must be JSON booleans"
+            )
         if self.input_adapter not in {"prepared-scene-v2", "rosbag-fixed-lag-v1"}:
             raise ValueError("input_adapter must be prepared-scene-v2 or rosbag-fixed-lag-v1")
         if (self.resize_width is None) != (self.resize_height is None):
@@ -372,11 +377,14 @@ class SageConfig:
     mapping: MappingConfig
     gaussian_initialization: GaussianInitializationConfig
     loss: MappingLossConfig
+    model_root: Path | None = None
     schema_version: str = SCHEMA_VERSION
 
     def __post_init__(self) -> None:
         if self.schema_version != SCHEMA_VERSION:
             raise ValueError(f"Live config must use schema_version={SCHEMA_VERSION}")
+        if self.model_root is not None:
+            object.__setattr__(self, "model_root", Path(self.model_root).expanduser().resolve())
         descriptors = (
             SLAM_SOURCE_DESCRIPTORS
             if self.scene.enabled_depth_sources[0] == "LIDAR_SLAM_CENTER"
@@ -407,11 +415,12 @@ class SageConfig:
                 return [convert(item) for item in value]
             return convert(asdict(value)) if hasattr(value, "__dataclass_fields__") else value
 
-        payload = {"schema_version": self.schema_version, "run": {"output_dir": self.output_dir, "seed": self.seed}, "scene": self.scene, "growth_sources": self.growth_sources, "growth": self.growth, "pruning": self.pruning, "mapping": self.mapping}
+        payload = {"schema_version": self.schema_version, "run": {"output_dir": self.output_dir, "seed": self.seed}, "runtime": {"model_root": self.model_root, "require_clean_worktree": self.scene.require_clean_worktree}, "scene": self.scene, "growth_sources": self.growth_sources, "growth": self.growth, "pruning": self.pruning, "mapping": self.mapping}
         payload["gaussian_initialization"] = self.gaussian_initialization
         payload["loss"] = self.loss
         converted = convert(payload)
         scene = converted["scene"]
+        scene.pop("require_clean_worktree", None)
         if scene.get("center_depth_dir") is None:
             scene.pop("center_depth_dir", None)
         else:

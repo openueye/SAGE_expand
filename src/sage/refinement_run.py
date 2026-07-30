@@ -120,10 +120,14 @@ def preflight_appearance_runtime(
     metric_evaluator = None
     provider = None
     try:
-        metric_evaluator = ImageMetricEvaluator(device)
+        metric_evaluator = ImageMetricEvaluator(
+            device,
+            model_root=config.model_root,
+        )
         provider = OnlineSPNetProvider(
             config.growth_sources.spnet,
             device=device,
+            model_root=config.model_root,
         )
         return {
             "device": str(device),
@@ -690,6 +694,7 @@ def run_appearance_refinement(
         provider = OnlineSPNetProvider(
             config.growth_sources.spnet,
             device=device,
+            model_root=config.model_root,
         )
         dense_prior_started = perf_counter()
 
