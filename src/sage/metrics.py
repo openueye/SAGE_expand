@@ -5,6 +5,7 @@ import importlib
 import os
 from pathlib import Path
 from threading import Lock
+import warnings
 
 import torch
 from torch.nn import functional as F
@@ -112,7 +113,16 @@ def _build_lpips(features: torch.nn.Sequential) -> torch.nn.Module:
     with _LPIPS_BUILD_LOCK:
         lpips_module._get_tv_model_features = explicit_features
         try:
-            return metric_type(net_type="alex", normalize=True).eval().requires_grad_(False)
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore",
+                    category=FutureWarning,
+                    message=(
+                        r"You are using `torch\\.load` with `weights_only=False` "
+                        r"\\(the current default value\\), which uses the default pickle module"
+                    ),
+                )
+                return metric_type(net_type="alex", normalize=True).eval().requires_grad_(False)
         finally:
             lpips_module._get_tv_model_features = original_resolver
 

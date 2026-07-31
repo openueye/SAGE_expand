@@ -52,6 +52,7 @@ def _report_frames(
     frames,
     *,
     expected_total: int,
+    map_every: int,
     mapping_started_at: float,
 ):
     for completed, frame in enumerate(frames, start=1):
@@ -61,9 +62,15 @@ def _report_frames(
             or (expected_total > 0 and completed == expected_total)
         ):
             elapsed = perf_counter() - mapping_started_at
+            key_frame: int = (frame.index // map_every) + 1 if map_every > 0 else 1
+            rosbag_frame: str = (
+                f"{int(frame.stem):06d}"
+                if frame.stem.isdigit()
+                else frame.stem
+            )
             print(
-                f"[{_format_elapsed(elapsed)}] SAGE mapping frame "
-                f"{completed}；frame index {frame.index:06d}",
+                f"[{_format_elapsed(elapsed)}] SAGE mapping frame {completed}; "
+                f"key frame {key_frame}; rosbag frame {rosbag_frame}",
                 flush=True,
             )
         yield frame
@@ -175,6 +182,7 @@ def train(
             _report_frames(
                 source.frames(),
                 expected_total=ALL_ACCEPTED_FRAME_LIMIT,
+                map_every=config.mapping.map_every,
                 mapping_started_at=mapping_started_at,
             )
         )
