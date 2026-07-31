@@ -12,8 +12,8 @@ from typing import Iterable, Mapping
 import numpy as np
 from PIL import Image
 
-from ...hashing import sha256_file
-from ...receipt_contract import (
+from ...foundation.hashing import sha256_file
+from ...foundation.receipt_contract import (
     MATERIALIZED_RECEIPT_SCHEMA,
     STREAM_RECEIPT_SCHEMA,
     validate_completion_receipt,

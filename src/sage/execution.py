@@ -13,7 +13,7 @@ from threading import Thread
 from time import perf_counter
 from typing import Any
 
-from .hashing import sha256_file
+from .foundation.hashing import sha256_file
 
 
 EXECUTION_RECEIPT_SCHEMA_VERSION = "sage-execution-receipt-v1"

@@ -6,7 +6,7 @@ import argparse
 from pathlib import Path
 
 from sage.data.rosbag.streaming import OdinBagFixedLagResultStream
-from sage.scene import PreparedScene
+from sage.data.scene import PreparedScene
 
 
 MANIFEST_NAME = "sage_prepared_scene_manifest.json"

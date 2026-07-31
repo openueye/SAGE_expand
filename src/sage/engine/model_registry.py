@@ -8,7 +8,7 @@ import shutil
 import sys
 import tempfile
 
-from .hashing import sha256_file as _sha256_file
+from ..foundation.hashing import sha256_file as _sha256_file
 
 
 REGISTRY_SCHEMA_VERSION = "sage-model-registry-v1"

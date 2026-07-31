@@ -7,24 +7,24 @@ import json
 from pathlib import Path
 import shutil
 
-from .artifact_identity import (
-    normalize_dataset_identity,
-    validate_dataset_identity,
-)
-from .artifact_versions import APPEARANCE_REFINEMENT_CHECKPOINT_VERSION
 from .artifacts import load_checkpoint
-from .config import ALL_ACCEPTED_FRAME_LIMIT, SageConfig
-from .evaluation_run import run_evaluation
+from .data.frame_source import frame_source_for_config
+from .evaluation.evaluation_run import run_evaluation
 from .execution import (
     EXECUTION_RECEIPT_SCHEMA_VERSION,
     publish_json_atomic,
     validate_execution_receipt,
 )
-from .frame_source import frame_source_for_config
-from .hashing import sha256_file
-from .mapping_worker import run_formal_training, run_training_preflight
+from .foundation.artifact_versions import APPEARANCE_REFINEMENT_CHECKPOINT_VERSION
+from .foundation.config import ALL_ACCEPTED_FRAME_LIMIT, SageConfig
+from .foundation.hashing import sha256_file
+from .foundation.identity_schema import (
+    normalize_dataset_identity,
+    validate_dataset_identity,
+)
+from .mapping.mapping_worker import run_formal_training, run_training_preflight
 from .method_config import SageInput, SageMethodConfig
-from .refinement_run import (
+from .refinement.refinement_run import (
     preflight_appearance_runtime,
     run_appearance_refinement,
 )

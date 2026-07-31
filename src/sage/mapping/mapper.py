@@ -9,7 +9,16 @@ from typing import Callable
 import numpy as np
 import torch
 
-from .config import (
+from ..data.providers.spnet import SPNetEvidenceProvider
+from ..engine.geometry import (
+    build_optimization_schedule,
+    select_current_anchored_global_views,
+)
+from ..engine.growth import GrowthBuilder
+from ..engine.losses import mapping_loss
+from ..engine.model import TrainableGaussians
+from ..engine.rendering import RenderOutput, Renderer
+from ..foundation.config import (
     ODIN_GLOBAL_CURRENT_ANCHORED_VARIANT,
     GaussianInitializationConfig,
     GrowthConfig,
@@ -17,17 +26,8 @@ from .config import (
     MappingLossConfig,
     PruningConfig,
 )
-from .contracts import FrameInputs, SourceType
-from .geometry import (
-    build_optimization_schedule,
-    select_current_anchored_global_views,
-)
-from .growth import GrowthBuilder
-from .losses import mapping_loss
-from .model import TrainableGaussians
-from .rendering import RenderOutput, Renderer
-from .source_policy import SOURCE_DESCRIPTORS, descriptor_for_type, descriptors_for_types, opacity_keep_mask, source_counts
-from .providers.spnet import SPNetEvidenceProvider
+from ..foundation.contracts import FrameInputs, SourceType
+from ..foundation.source_policy import SOURCE_DESCRIPTORS, descriptor_for_type, descriptors_for_types, opacity_keep_mask, source_counts
 
 
 def is_mapping_frame(frame_index: int, *, map_every: int) -> bool:

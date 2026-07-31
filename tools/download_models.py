@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from sage.model_registry import (
+from sage.engine.model_registry import (
     ModelRegistry,
     bootstrap_model,
     default_registry_path,

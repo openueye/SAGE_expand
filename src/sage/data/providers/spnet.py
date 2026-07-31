@@ -15,12 +15,12 @@ import numpy as np
 import torch
 from torch.nn import functional as F
 
-from ..config import (
+from ...engine.model_registry import ModelRegistry, default_registry_path
+from ...foundation.config import (
     NATIVE_FULL_FRAME_PAD_CROP_V1,
     SPNetOnlineConfig,
 )
-from ..contracts import DepthEvidence, FrameInputs, SourceType
-from ..model_registry import ModelRegistry, default_registry_path
+from ...foundation.contracts import DepthEvidence, FrameInputs, SourceType
 
 
 SPNET_SOURCE_IDENTITY_SCHEMA_VERSION = "sage-spnet-source-identity-v1"

@@ -8,7 +8,8 @@ import numpy as np
 import torch
 from torch.nn import functional as F
 
-from .contracts import (
+from ..data.providers.spnet import DenseSPNetProvider
+from ..foundation.contracts import (
     DenseGeometryPrior,
     DensePriorDiagnostics,
     DepthEvidence,
@@ -20,7 +21,6 @@ from .dense_geometry_config import (
     DENSE_ALIGNMENT_NONWORSENING_V2,
     DensePriorPolicy,
 )
-from .providers.spnet import DenseSPNetProvider
 
 
 def prepare_dense_priors(

@@ -5,9 +5,9 @@ from __future__ import annotations
 import torch
 from torch.nn import functional as F
 
-from .contracts import CameraIntrinsics, DenseGeometryPrior
+from ..engine.losses import alpha_normalized_depth
+from ..foundation.contracts import CameraIntrinsics, DenseGeometryPrior
 from .dense_geometry_config import DenseGeometryPolicy, DensePriorPolicy
-from .losses import alpha_normalized_depth
 
 
 _CAMERA_RAYS: dict[

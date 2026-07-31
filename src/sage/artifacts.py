@@ -1,32 +1,26 @@
-"""Checkpoint validation and PLY export for SAGE."""
+"""Checkpoint schema validation for SAGE."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
 import numpy as np
-from plyfile import PlyData, PlyElement
 import torch
-from torch.nn import functional as F
 
-from .appearance_config import (
-    APPEARANCE_REFINEMENT_SCHEMA,
-    SCALAR_EXPOSURE_NUISANCE_SCHEMA,
-    AppearanceRefinementConfig,
-)
-from .artifact_identity import DependencyIdentity, _valid_environment_locks
-from .artifact_versions import (
+from .data.providers.spnet import validate_spnet_identity_payload
+from .foundation.identity_schema import DependencyIdentity, _valid_environment_locks
+from .foundation.artifact_versions import (
     APPEARANCE_REFINEMENT_CHECKPOINT_VERSION,
     CHECKPOINT_VERSION,
     SOURCE_CHECKPOINT_VERSIONS,
 )
-from .providers.spnet import validate_spnet_identity_payload
-from .receipt_contract import (
-    REPLAY_RECEIPT_SCHEMA,
-    STREAM_RECEIPT_SCHEMA,
-    validate_completion_receipt,
+from .foundation.receipt_contract import validate_sage_completion_receipt
+from .foundation.source_policy import SOURCE_POLICY_VERSION
+from .refinement.appearance_config import (
+    APPEARANCE_REFINEMENT_SCHEMA,
+    SCALAR_EXPOSURE_NUISANCE_SCHEMA,
+    AppearanceRefinementConfig,
 )
-from .source_policy import SOURCE_POLICY_VERSION
 
 
 _GAUSSIAN_TENSORS = {
@@ -491,9 +485,8 @@ def _validate_common_checkpoint(payload: dict[str, object]) -> None:
         if isinstance(frame_source, dict)
         else None
     )
-    validate_completion_receipt(
+    validate_sage_completion_receipt(
         payload.get("completion_receipt"),
-        allowed_schemas={REPLAY_RECEIPT_SCHEMA, STREAM_RECEIPT_SCHEMA},
         expected_adapter=adapter,
         expected_source_mode=snapshot.get("source_mode"),
         require_bag_exhausted=adapter == "rosbag-fixed-lag-v1",
@@ -531,62 +524,3 @@ def load_checkpoint(path: Path) -> dict[str, object]:
     return payload
 
 
-def write_model_ply(path: Path, model: object) -> None:
-    """Export the refined map using the public Gaussian PLY layout."""
-    means = model.means3d.detach().cpu().numpy()
-    normals = np.zeros_like(means)
-    sh_dc = (
-        (model.colors.detach() - 0.5) / 0.28209479177387814
-    ).cpu().numpy()
-    opacity = model.opacity_logits.detach().cpu().reshape(-1).numpy()
-    scales = model.scales.detach()
-    rotations = F.normalize(
-        model.rotations.detach(),
-        dim=1,
-    ).cpu().numpy()
-    float_names = (
-        "x",
-        "y",
-        "z",
-        "nx",
-        "ny",
-        "nz",
-        "f_dc_0",
-        "f_dc_1",
-        "f_dc_2",
-        "opacity",
-        "scale_0",
-        "scale_1",
-        "scale_2",
-        "rot_0",
-        "rot_1",
-        "rot_2",
-        "rot_3",
-    )
-    elements = np.empty(
-        model.count,
-        dtype=[
-            *((name, "f4") for name in float_names),
-            ("gaussian_id", "i4"),
-            ("created_at", "i4"),
-        ],
-    )
-    attributes = np.concatenate(
-        (
-            means,
-            normals,
-            sh_dc,
-            opacity[:, None],
-            scales.cpu().numpy(),
-            rotations,
-        ),
-        axis=1,
-    )
-    for column, name in enumerate(float_names):
-        elements[name] = attributes[:, column]
-    elements["gaussian_id"] = model.gaussian_ids.detach().cpu().numpy()
-    elements["created_at"] = model.created_at.detach().cpu().numpy()
-    PlyData(
-        [PlyElement.describe(elements, "vertex")],
-        text=False,
-    ).write(path)

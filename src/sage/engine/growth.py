@@ -4,11 +4,11 @@ from dataclasses import dataclass
 
 import torch
 
-from .config import GaussianInitializationConfig, GrowthConfig
-from .contracts import DepthEvidence, FrameInputs, GaussianAppendBatch, GrowthInputs, SourceType
+from ..foundation.config import GaussianInitializationConfig, GrowthConfig
+from ..foundation.contracts import DepthEvidence, FrameInputs, GaussianAppendBatch, GrowthInputs, SourceType
 from .geometry import backproject_depth
 from .rendering import RenderOutput
-from .source_policy import SOURCE_DESCRIPTORS, descriptor_for_type, descriptors_for_types, source_policy_value
+from ..foundation.source_policy import SOURCE_DESCRIPTORS, descriptor_for_type, descriptors_for_types, source_policy_value
 
 
 @dataclass(frozen=True)

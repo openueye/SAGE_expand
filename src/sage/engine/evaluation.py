@@ -8,8 +8,8 @@ from typing import Any, Callable, Iterable
 
 import torch
 
-from .config import ALPHA_NORMALIZED_DEPTH_POLICY, RAW_ACCUMULATED_DEPTH_POLICY
-from .contracts import FrameInputs, MappingObservation, SourceType
+from ..foundation.config import ALPHA_NORMALIZED_DEPTH_POLICY, RAW_ACCUMULATED_DEPTH_POLICY
+from ..foundation.contracts import FrameInputs, MappingObservation, SourceType
 from .losses import alpha_normalized_depth
 from .rendering import RenderOutput
 

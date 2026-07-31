@@ -13,27 +13,25 @@ from time import perf_counter
 import numpy as np
 import torch
 
-from .artifact_identity import (
-    DependencyIdentity,
-    RunInputIdentity,
-)
-from .mapping_artifacts import write_run_artifacts
-from .config import (
-    ALL_ACCEPTED_FRAME_LIMIT,
-    SageConfig,
-)
-from .execution import (
+from ..data.frame_source import frame_source_for_config
+from ..data.providers.spnet import OnlineSPNetProvider, SPNetEvidenceProvider
+from ..engine.metrics import ImageMetricEvaluator
+from ..engine.model import TrainableGaussians
+from ..engine.rendering import capture_renderer_identity, render
+from ..execution import (
     EXECUTION_CHILD_ENV,
     formal_train_command,
     run_with_execution_receipt,
 )
-from .frame_source import frame_source_for_config
-from .hashing import sha256_file
+from ..foundation.config import (
+    ALL_ACCEPTED_FRAME_LIMIT,
+    SageConfig,
+)
+from ..foundation.hashing import sha256_file
+from ..foundation.identity_schema import DependencyIdentity
 from .mapper import MappingEngine
-from .metrics import ImageMetricEvaluator
-from .model import TrainableGaussians
-from .providers.spnet import OnlineSPNetProvider, SPNetEvidenceProvider
-from .rendering import capture_renderer_identity, render
+from .mapping_artifacts import write_run_artifacts
+from .run_identity import RunInputIdentity
 
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs" / "sage.yaml"

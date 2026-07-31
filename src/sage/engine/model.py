@@ -3,14 +3,14 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from .artifact_versions import (
+from ..foundation.artifact_versions import (
     APPEARANCE_REFINEMENT_CHECKPOINT_VERSION,
     CHECKPOINT_VERSION,
 )
-from .config import GaussianInitializationConfig
-from .contracts import FrameInputs, GaussianAppendBatch
+from ..foundation.config import GaussianInitializationConfig
+from ..foundation.contracts import FrameInputs, GaussianAppendBatch
 from .geometry import backproject_depth
-from .source_policy import SOURCE_POLICY_VERSION
+from ..foundation.source_policy import SOURCE_POLICY_VERSION
 
 
 class TrainableGaussians(nn.Module):

@@ -117,6 +117,29 @@ def validate_completion_receipt(
     return deepcopy(receipt)
 
 
+def validate_sage_completion_receipt(
+    receipt: object,
+    *,
+    expected_adapter: str | None = None,
+    expected_source_mode: str | None = None,
+    expected_emitted: int | None = None,
+    require_bag_exhausted: bool = False,
+    require_write_through: bool = False,
+    require_peak_cuda: bool = True,
+) -> dict[str, object]:
+    """validate_completion_receipt() pinned to the two receipt schemas SAGE publishes."""
+    return validate_completion_receipt(
+        receipt,
+        allowed_schemas={REPLAY_RECEIPT_SCHEMA, STREAM_RECEIPT_SCHEMA},
+        expected_adapter=expected_adapter,
+        expected_source_mode=expected_source_mode,
+        expected_emitted=expected_emitted,
+        require_bag_exhausted=require_bag_exhausted,
+        require_write_through=require_write_through,
+        require_peak_cuda=require_peak_cuda,
+    )
+
+
 def _validate_stream_receipt(
     receipt: dict[str, object],
     *,

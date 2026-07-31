@@ -11,25 +11,16 @@ import sys
 import tempfile
 
 import numpy as np
-from plyfile import PlyData, PlyElement
 import torch
-from torch.nn import functional as F
 
-from .artifact_versions import CHECKPOINT_VERSION
-from .artifact_identity import (
-    DependencyIdentity,
-    RunInputIdentity,
-    _valid_environment_locks,
-)
-from .config import SageConfig
+from ..data.scene import sha256_file
+from ..engine.ply_export import write_gaussian_ply
+from ..foundation.artifact_versions import CHECKPOINT_VERSION
+from ..foundation.receipt_contract import validate_sage_completion_receipt
+from ..foundation.config import SageConfig
+from ..foundation.source_policy import SOURCE_POLICY_VERSION, source_counts
 from .mapper import MappingCommit, MappingRun
-from .receipt_contract import (
-    REPLAY_RECEIPT_SCHEMA,
-    STREAM_RECEIPT_SCHEMA,
-    validate_completion_receipt,
-)
-from .scene import sha256_file
-from .source_policy import SOURCE_POLICY_VERSION, source_counts
+from .run_identity import RunInputIdentity
 
 
 RUN_MANIFEST_SCHEMA_VERSION = "sage-run-manifest-v1"
@@ -95,27 +86,6 @@ def _checkpoint_payload(
     }
 
 
-def _write_ply(path: Path, run: MappingRun) -> None:
-    model = run.model
-    means = model.means3d.detach().cpu().numpy()
-    normals = np.zeros_like(means)
-    sh_dc = ((model.colors.detach() - 0.5) / 0.28209479177387814).cpu().numpy()
-    opacity = model.opacity_logits.detach().cpu().reshape(-1).numpy()
-    scales = model.scales.detach()
-    rotations = F.normalize(model.rotations.detach(), dim=1).cpu().numpy()
-    float_names = (
-        "x", "y", "z", "nx", "ny", "nz", "f_dc_0", "f_dc_1", "f_dc_2", "opacity",
-        "scale_0", "scale_1", "scale_2", "rot_0", "rot_1", "rot_2", "rot_3",
-    )
-    elements = np.empty(model.count, dtype=[(name, "f4") for name in float_names] + [("gaussian_id", "i4"), ("created_at", "i4")])
-    attributes = np.concatenate((means, normals, sh_dc, opacity[:, None], scales.cpu().numpy(), rotations), axis=1)
-    for column, name in enumerate(float_names):
-        elements[name] = attributes[:, column]
-    elements["gaussian_id"] = model.gaussian_ids.detach().cpu().numpy()
-    elements["created_at"] = model.created_at.detach().cpu().numpy()
-    PlyData([PlyElement.describe(elements, "vertex")], text=False).write(path)
-
-
 def _validate_run(run: MappingRun) -> None:
     previous = None
     for commit in run.commits:
@@ -126,26 +96,6 @@ def _validate_run(run: MappingRun) -> None:
         if previous is not None and previous + commit.added - commit.pruned != commit.gaussian_count:
             raise ValueError("Run commit Gaussian transition is inconsistent")
         previous = commit.gaussian_count
-
-
-def _validate_completion_receipt(
-    receipt: object,
-    *,
-    expected_adapter: str | None = None,
-    expected_source_mode: str | None = None,
-    expected_emitted: int | None = None,
-    require_bag_exhausted: bool = False,
-    require_write_through: bool = False,
-) -> dict[str, object]:
-    return validate_completion_receipt(
-        receipt,
-        allowed_schemas={REPLAY_RECEIPT_SCHEMA, STREAM_RECEIPT_SCHEMA},
-        expected_adapter=expected_adapter,
-        expected_source_mode=expected_source_mode,
-        expected_emitted=expected_emitted,
-        require_bag_exhausted=require_bag_exhausted,
-        require_write_through=require_write_through,
-    )
 
 
 def write_run_artifacts(
@@ -175,7 +125,7 @@ def write_run_artifacts(
     staging = Path(tempfile.mkdtemp(prefix=f".{output.name}.staging-", dir=output.parent))
     try:
         _validate_run(run)
-        receipt = _validate_completion_receipt(
+        receipt = validate_sage_completion_receipt(
             completion_receipt,
             expected_adapter=str(adapter) if adapter is not None else None,
             expected_source_mode=input_identity.source_mode,
@@ -206,7 +156,7 @@ def write_run_artifacts(
         ply = staging / "map.ply"
         manifest = staging / "run_manifest.json"
         torch.save(_checkpoint_payload(run, input_identity, receipt), checkpoint)
-        _write_ply(ply, run)
+        write_gaussian_ply(ply, run.model)
         payload = {
             "schema_version": RUN_MANIFEST_SCHEMA_VERSION,
             "producer_code": input_identity.producer_code_payload(),

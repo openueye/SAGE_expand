@@ -8,11 +8,11 @@ from typing import Callable
 import numpy as np
 import torch
 
+from ..engine.model import TrainableGaussians
 from .appearance_config import (
     SCALAR_EXPOSURE_NUISANCE_SCHEMA,
     AppearanceRefinementConfig,
 )
-from .model import TrainableGaussians
 
 
 @dataclass(frozen=True)

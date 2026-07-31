@@ -16,8 +16,8 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-from sage.config import GaussianInitializationConfig, GrowthConfig
-from sage.contracts import (
+from sage.foundation.config import GaussianInitializationConfig, GrowthConfig
+from sage.foundation.contracts import (
     CameraIntrinsics,
     DepthEvidence,
     FrameInputs,
@@ -26,8 +26,8 @@ from sage.contracts import (
     Pose,
     SourceType,
 )
-from sage.growth import GrowthBuilder
-from sage.rendering import RenderOutput
+from sage.engine.growth import GrowthBuilder
+from sage.engine.rendering import RenderOutput
 
 HEIGHT = WIDTH = 8
 REFERENCE_DEPTH_M = 5.0

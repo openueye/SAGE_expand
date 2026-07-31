@@ -10,20 +10,20 @@ from time import perf_counter
 
 import torch
 
-from .artifacts import load_checkpoint
-from .artifact_identity import (
+from ..artifacts import load_checkpoint
+from ..data.frame_source import frame_source_for_config
+from ..engine.evaluation import EvaluationDepthPolicy, evaluate_frames
+from ..engine.metrics import ImageMetricEvaluator
+from ..engine.model import TrainableGaussians
+from ..engine.rendering import render
+from ..foundation.artifact_versions import APPEARANCE_REFINEMENT_CHECKPOINT_VERSION
+from ..foundation.code_identity import repository_code_identity
+from ..foundation.config import ALL_ACCEPTED_FRAME_LIMIT, SageConfig
+from ..foundation.hashing import sha256_file
+from ..foundation.identity_schema import (
     normalize_dataset_identity,
     validate_dataset_identity,
 )
-from .artifact_versions import APPEARANCE_REFINEMENT_CHECKPOINT_VERSION
-from .code_identity import repository_code_identity
-from .config import ALL_ACCEPTED_FRAME_LIMIT, SageConfig
-from .evaluation import EvaluationDepthPolicy, evaluate_frames
-from .frame_source import frame_source_for_config
-from .hashing import sha256_file
-from .metrics import ImageMetricEvaluator
-from .model import TrainableGaussians
-from .rendering import render
 
 
 _EVALUATION_PROGRESS_EVERY = 50

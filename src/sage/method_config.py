@@ -8,7 +8,8 @@ from typing import Any
 
 import yaml
 
-from .config import (
+from .data.scene import PreparedScene
+from .foundation.config import (
     ALPHA_NORMALIZED_DEPTH_POLICY,
     ALL_ACCEPTED_FRAME_POLICY,
     FROZEN_MAPPING_LOSS_VARIANT,
@@ -26,17 +27,16 @@ from .config import (
     SageConfig,
     SceneConfig,
 )
-from .appearance_config import (
+from .refinement.appearance_config import (
     APPEARANCE_REFINEMENT_SCHEMA,
     FIRST_MAPPING_FRAME_EXPOSURE_GAUGE,
     SEEDED_RANDOM_MAPPING_FRAME_VARIANT,
     AppearanceRefinementConfig,
 )
-from .dense_geometry_config import (
+from .refinement.dense_geometry_config import (
     DENSE_ALIGNMENT_NONWORSENING_V2,
     DensePriorPolicy,
 )
-from .scene import PreparedScene
 
 
 _ROOT_FIELDS = {

@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-from .contracts import CameraIntrinsics, Pose
+from ..foundation.contracts import CameraIntrinsics, Pose
 
 
 def rotation_wc(pose: Pose, *, device: torch.device | str = "cpu") -> torch.Tensor:

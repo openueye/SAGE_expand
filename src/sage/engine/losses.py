@@ -3,8 +3,8 @@ from __future__ import annotations
 import torch
 from torch.nn import functional as F
 
-from .config import MappingLossConfig
-from .contracts import MappingObservation, SourceType
+from ..foundation.config import MappingLossConfig
+from ..foundation.contracts import MappingObservation, SourceType
 
 
 _SSIM_WINDOWS: dict[tuple[str, torch.dtype], torch.Tensor] = {}

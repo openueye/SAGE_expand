@@ -4,7 +4,7 @@ from dataclasses import asdict, dataclass
 from types import MappingProxyType
 from typing import Mapping
 
-from ...prepared_scene_contract import (
+from ...foundation.prepared_scene_contract import (
     PREPARED_SCENE_SCHEMA,
     PROFILE_CONTRACTS,
     validate_source_contract as validate_prepared_scene_contract,

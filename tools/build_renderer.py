@@ -14,7 +14,7 @@ import sysconfig
 
 import torch
 
-from sage.rendering import (
+from sage.engine.rendering import (
     RENDERER_BUILD_MANIFEST_NAME,
     RENDERER_BUILD_MANIFEST_SCHEMA,
     RENDERER_BUILD_ENVIRONMENT_VARIABLES,
@@ -32,7 +32,7 @@ from sage.rendering import (
     _installed_conda_package_identity,
     renderer_source_tree_sha256,
 )
-from sage.hashing import sha256_file
+from sage.foundation.hashing import sha256_file
 
 
 def _command_version(command: list[str], pattern: str, description: str) -> str:

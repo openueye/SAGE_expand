@@ -11,7 +11,7 @@ import warnings
 import torch
 from torch.nn import functional as F
 
-from .hashing import sha256_file
+from ..foundation.hashing import sha256_file
 from .losses import photometric_loss
 from .model_registry import ALEXNET_MODEL_ID, ModelRegistry, default_registry_path, MODEL_ROOT_ENVIRONMENT_VARIABLE
 

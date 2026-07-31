@@ -13,9 +13,9 @@ from typing import Protocol
 import torch
 from torch.nn import functional as F
 
-from .contracts import FrameInputs
+from ..foundation.contracts import FrameInputs
 from .geometry import rotation_wc
-from .hashing import sha256_file
+from ..foundation.hashing import sha256_file
 from .model import TrainableGaussians
 
 

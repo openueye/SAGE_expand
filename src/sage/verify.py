@@ -13,7 +13,7 @@ import numpy as np
 import sage
 import torch
 
-from .hashing import sha256_file
+from .foundation.hashing import sha256_file
 
 
 ROOT = Path(__file__).resolve().parents[2]

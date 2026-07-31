@@ -7,8 +7,8 @@ from typing import Protocol
 
 import numpy as np
 
-from .config import SceneConfig
-from .contracts import (
+from ..foundation.config import SceneConfig
+from ..foundation.contracts import (
     CameraIntrinsics,
     DepthEvidence,
     FrameInputs,
@@ -26,8 +26,8 @@ from .scene import (
     sha256_file,
     transform_contract_sha256,
 )
-from .receipt_contract import REPLAY_RECEIPT_SCHEMA
-from .source_policy import SOURCE_POLICY_VERSION, descriptor_for_type
+from ..foundation.receipt_contract import REPLAY_RECEIPT_SCHEMA
+from ..foundation.source_policy import SOURCE_POLICY_VERSION, descriptor_for_type
 
 
 class FrameSource(Protocol):

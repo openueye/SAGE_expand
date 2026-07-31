@@ -2,7 +2,7 @@
 
 from importlib.metadata import version
 
-from .config import SageConfig
+from .foundation.config import SageConfig
 
 
 __version__ = version("sage")

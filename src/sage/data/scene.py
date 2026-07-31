@@ -9,16 +9,16 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from .config import SceneConfig
-from .contracts import CameraIntrinsics, DepthEvidence, FrameInputs, GrowthInputs, INVALID_SOURCE_TYPE, MappingObservation, Pose, SourceType
-from .hashing import sha256_file as _sha256_file
-from .prepared_scene_contract import PREPARED_SCENE_SCHEMA, validate_source_contract
-from .receipt_contract import (
+from ..foundation.config import SceneConfig
+from ..foundation.contracts import CameraIntrinsics, DepthEvidence, FrameInputs, GrowthInputs, INVALID_SOURCE_TYPE, MappingObservation, Pose, SourceType
+from ..foundation.hashing import sha256_file as _sha256_file
+from ..foundation.prepared_scene_contract import PREPARED_SCENE_SCHEMA, validate_source_contract
+from ..foundation.receipt_contract import (
     MATERIALIZED_RECEIPT_SCHEMA,
     STREAM_RECEIPT_SCHEMA,
     validate_completion_receipt,
 )
-from .source_policy import descriptor_for_type
+from ..foundation.source_policy import descriptor_for_type
 
 
 PREPARED_SCENE_MANIFEST_NAME = "sage_prepared_scene_manifest.json"

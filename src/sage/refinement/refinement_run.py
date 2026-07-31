@@ -12,52 +12,53 @@ from time import perf_counter
 
 import torch
 
+from ..artifacts import load_checkpoint
+from ..data.frame_source import frame_source_for_config
+from ..data.providers.spnet import OnlineSPNetProvider
+from ..engine.evaluation import (
+    EvaluationDepthPolicy,
+    aggregate_evaluation_frame_reports,
+    evaluate_frames,
+)
+from ..engine.losses import mapping_loss, photometric_loss
+from ..engine.metrics import ImageMetricEvaluator
+from ..engine.model import TrainableGaussians
+from ..engine.ply_export import write_gaussian_ply
+from ..engine.rendering import (
+    RenderOutput,
+    capture_renderer_identity,
+    prepare_render_static,
+    render,
+)
+from ..foundation.artifact_versions import (
+    APPEARANCE_REFINEMENT_CHECKPOINT_VERSION,
+    CHECKPOINT_VERSION,
+)
+from ..foundation.code_identity import repository_code_identity
+from ..foundation.config import (
+    ALL_ACCEPTED_FRAME_LIMIT,
+    MappingLossConfig,
+    SageConfig,
+)
+from ..foundation.contracts import DenseGeometryPrior, FrameInputs
+from ..foundation.hashing import sha256_file
+from ..foundation.identity_schema import (
+    normalize_dataset_identity,
+    validate_dataset_identity,
+)
 from .appearance_config import AppearanceRefinementConfig
 from .appearance_refinement import (
     AppearanceExposureNuisance,
     AppearanceObjective,
     AppearanceRefiner,
 )
-from .artifact_identity import (
-    normalize_dataset_identity,
-    validate_dataset_identity,
-)
-from .artifact_versions import (
-    APPEARANCE_REFINEMENT_CHECKPOINT_VERSION,
-    CHECKPOINT_VERSION,
-)
-from .artifacts import load_checkpoint, write_model_ply
-from .code_identity import repository_code_identity
-from .config import (
-    ALL_ACCEPTED_FRAME_LIMIT,
-    MappingLossConfig,
-    SageConfig,
-)
-from .contracts import DenseGeometryPrior, FrameInputs
+from .dense_geometry_config import DenseGeometryPolicy
 from .dense_geometry_objective import (
     dense_geometry_objective,
     dense_prior_support_counts,
     prepare_dense_geometry_static,
 )
 from .dense_geometry_prior import prepare_dense_priors
-from .evaluation import (
-    EvaluationDepthPolicy,
-    aggregate_evaluation_frame_reports,
-    evaluate_frames,
-)
-from .frame_source import frame_source_for_config
-from .dense_geometry_config import DenseGeometryPolicy
-from .hashing import sha256_file
-from .losses import mapping_loss, photometric_loss
-from .metrics import ImageMetricEvaluator
-from .model import TrainableGaussians
-from .providers.spnet import OnlineSPNetProvider
-from .rendering import (
-    RenderOutput,
-    capture_renderer_identity,
-    prepare_render_static,
-    render,
-)
 
 
 APPEARANCE_RUN_SCHEMA = "sage-refinement-run-v1"
@@ -871,7 +872,7 @@ def run_appearance_refinement(
         torch.cuda.empty_cache()
         checkpoint_path = staging / "appearance_checkpoint.pt"
         torch.save(payload, checkpoint_path)
-        write_model_ply(staging / "appearance_map.ply", model)
+        write_gaussian_ply(staging / "appearance_map.ply", model)
         manifest = {
             "schema_version": APPEARANCE_RUN_SCHEMA,
             "producer_code": producer_code,

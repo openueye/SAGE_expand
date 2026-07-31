@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from .evaluation_run import run_evaluation
+from .evaluation.evaluation_run import run_evaluation
 from .method_config import SageInput, SageMethodConfig
 from .pipeline import preflight_training, run_training
 
