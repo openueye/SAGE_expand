@@ -16,7 +16,7 @@ _SOURCE_PATHS = (
 
 
 def source_state_sha256(repository: Path | None = None) -> str:
-    root = (repository or Path(__file__).resolve().parents[2]).resolve()
+    root = (repository or Path(__file__).resolve().parents[3]).resolve()
     files: list[Path] = []
     for relative in _SOURCE_PATHS:
         path = root / relative
@@ -39,7 +39,7 @@ def source_state_sha256(repository: Path | None = None) -> str:
 
 
 def repository_code_identity(repository: Path | None = None) -> dict[str, object]:
-    root = (repository or Path(__file__).resolve().parents[2]).resolve()
+    root = (repository or Path(__file__).resolve().parents[3]).resolve()
     commit = subprocess.run(
         ["git", "-C", str(root), "rev-parse", "HEAD"], check=True,
         capture_output=True, text=True,

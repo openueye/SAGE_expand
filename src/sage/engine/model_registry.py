@@ -88,7 +88,7 @@ class ModelRegistry:
 
 
 def default_registry_path() -> Path:
-    source_path = Path(__file__).resolve().parents[2] / "models" / "manifest.json"
+    source_path = Path(__file__).resolve().parents[3] / "models" / "manifest.json"
     if source_path.is_file():
         return source_path
     installed_path = Path(sys.prefix) / "sage_gs" / "models" / "manifest.json"

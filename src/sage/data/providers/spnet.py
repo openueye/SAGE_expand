@@ -377,7 +377,7 @@ def default_spnet_source_root() -> Path:
     configured = os.environ.get(SPNET_ROOT_ENVIRONMENT_VARIABLE)
     root = (
         Path(configured).expanduser().resolve()
-        if configured else Path(__file__).resolve().parents[3] / "third_party" / "SPNet"
+        if configured else Path(__file__).resolve().parents[4] / "third_party" / "SPNet"
     )
     if not (root / "src" / "networks.py").is_file():
         raise ValueError(

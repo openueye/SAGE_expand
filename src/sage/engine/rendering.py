@@ -80,7 +80,7 @@ class Renderer(Protocol):
 
 
 def _repository_root() -> Path:
-    return Path(__file__).resolve().parents[2]
+    return Path(__file__).resolve().parents[3]
 
 
 def _renderer_source_root() -> Path:

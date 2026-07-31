@@ -34,7 +34,7 @@ from .mapping_artifacts import write_run_artifacts
 from .run_identity import RunInputIdentity
 
 
-DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs" / "sage.yaml"
+DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[3] / "configs" / "sage.yaml"
 _MAPPING_PROGRESS_EVERY = 50
 
 
@@ -284,7 +284,7 @@ def run_formal_training(
         output=receipt_path,
         manifest=config.output_dir / "run_manifest.json",
         formal_config=config.config_path,
-        cwd=Path(__file__).resolve().parents[2],
+        cwd=Path(__file__).resolve().parents[3],
         env={**os.environ, EXECUTION_CHILD_ENV: "1"},
     )
     print(
