@@ -353,9 +353,11 @@ __global__ void preprocessCUDA(
 	const glm::vec3* scales,
 	const glm::vec4* rotations,
 	const float scale_modifier,
+	const float* view,
 	const float* proj,
 	const glm::vec3* campos,
 	const float3* dL_dmean2D,
+	const float* dL_ddepths,
 	glm::vec3* dL_dmeans,
 	float* dL_dcolor,
 	float* dL_dcov3D,
@@ -386,6 +388,15 @@ __global__ void preprocessCUDA(
 	// of cov2D and following SH conversion also affects it.
 	dL_dmeans[idx] += dL_dmean;
 
+	// Depth channel: depths[idx] = view-space z = transformPoint4x3(m, view).z,
+	// a linear map of the mean, so its gradient contribution is a direct
+	// scale of one row of the view matrix (mirrors transformPoint4x3 in
+	// auxiliary.h, which builds z from view[2], view[6], view[10]).
+	const float dL_ddepth = dL_ddepths[idx];
+	dL_dmeans[idx].x += view[2] * dL_ddepth;
+	dL_dmeans[idx].y += view[6] * dL_ddepth;
+	dL_dmeans[idx].z += view[10] * dL_ddepth;
+
 	// Compute gradient updates due to computing colors from SHs
 	if (shs)
 		computeColorFromSH(idx, D, M, (glm::vec3*)means, *campos, shs, clamped, (glm::vec3*)dL_dcolor, (glm::vec3*)dL_dmeans, (glm::vec3*)dL_dsh);
@@ -406,13 +417,16 @@ renderCUDA(
 	const float2* __restrict__ points_xy_image,
 	const float4* __restrict__ conic_opacity,
 	const float* __restrict__ colors,
+	const float* __restrict__ depths,
 	const float* __restrict__ final_Ts,
 	const uint32_t* __restrict__ n_contrib,
 	const float* __restrict__ dL_dpixels,
+	const float* __restrict__ dL_dpixels_depth,
 	float3* __restrict__ dL_dmean2D,
 	float4* __restrict__ dL_dconic2D,
 	float* __restrict__ dL_dopacity,
-	float* __restrict__ dL_dcolors)
+	float* __restrict__ dL_dcolors,
+	float* __restrict__ dL_ddepths)
 {
 	// We rasterize again. Compute necessary block info.
 	auto block = cg::this_thread_block();
@@ -435,9 +449,10 @@ renderCUDA(
 	__shared__ float2 collected_xy[BLOCK_SIZE];
 	__shared__ float4 collected_conic_opacity[BLOCK_SIZE];
 	__shared__ float collected_colors[C * BLOCK_SIZE];
+	__shared__ float collected_depths[BLOCK_SIZE];
 
 	// In the forward, we stored the final value for T, the
-	// product of all (1 - alpha) factors. 
+	// product of all (1 - alpha) factors.
 	const float T_final = inside ? final_Ts[pix_id] : 0;
 	float T = T_final;
 
@@ -451,6 +466,22 @@ renderCUDA(
 	if (inside)
 		for (int i = 0; i < C; i++)
 			dL_dpixel[i] = dL_dpixels[i * H * W + pix_id];
+
+	// Accumulated-depth and accumulated-alpha (silhouette) channels follow the
+	// exact same back-to-front alpha-compositing recurrence as the color
+	// channels above (see forward.cu: `D += depth[j] * alpha * T`, and
+	// `1 - T_final` for the silhouette), so their per-Gaussian gradient
+	// contribution is folded into the same dL_dalpha used by color.
+	float accum_rec_depth = 0;
+	float last_depth = 0;
+	float accum_rec_alpha_feat = 0;
+	float last_alpha_feat = 0;
+	float dL_dpixel_depth[2];
+	if (inside)
+	{
+		dL_dpixel_depth[0] = dL_dpixels_depth[pix_id];
+		dL_dpixel_depth[1] = dL_dpixels_depth[H * W + pix_id];
+	}
 
 	float last_alpha = 0;
 	float last_color[C] = { 0 };
@@ -475,6 +506,7 @@ renderCUDA(
 			collected_conic_opacity[block.thread_rank()] = conic_opacity[coll_id];
 			for (int i = 0; i < C; i++)
 				collected_colors[i * BLOCK_SIZE + block.thread_rank()] = colors[coll_id * C + i];
+			collected_depths[block.thread_rank()] = depths[coll_id];
 		}
 		block.sync();
 
@@ -522,6 +554,22 @@ renderCUDA(
 				// many that were affected by this Gaussian.
 				atomicAdd(&(dL_dcolors[global_id * C + ch]), dchannel_dcolor * dL_dchannel);
 			}
+
+			// Depth channel (per-Gaussian feature = view-space depth),
+			// mirrors the color loop above exactly.
+			const float depth_val = collected_depths[j];
+			accum_rec_depth = last_alpha * last_depth + (1.f - last_alpha) * accum_rec_depth;
+			last_depth = depth_val;
+			dL_dalpha += (depth_val - accum_rec_depth) * dL_dpixel_depth[0];
+			atomicAdd(&(dL_ddepths[global_id]), dchannel_dcolor * dL_dpixel_depth[0]);
+
+			// Alpha/silhouette channel (constant per-Gaussian feature = 1).
+			// Its only effect is through dL_dalpha; there is no per-Gaussian
+			// target tensor to atomicAdd into (unlike depth/color).
+			accum_rec_alpha_feat = last_alpha * last_alpha_feat + (1.f - last_alpha) * accum_rec_alpha_feat;
+			last_alpha_feat = 1.0f;
+			dL_dalpha += (1.0f - accum_rec_alpha_feat) * dL_dpixel_depth[1];
+
 			dL_dalpha *= T;
 			// Update last alpha (to be used in the next iteration)
 			last_alpha = alpha;
@@ -573,6 +621,7 @@ void BACKWARD::preprocess(
 	const glm::vec3* campos,
 	const float3* dL_dmean2D,
 	const float* dL_dconic,
+	const float* dL_ddepths,
 	glm::vec3* dL_dmean3D,
 	float* dL_dcolor,
 	float* dL_dcov3D,
@@ -580,7 +629,7 @@ void BACKWARD::preprocess(
 	glm::vec3* dL_dscale,
 	glm::vec4* dL_drot)
 {
-	// Propagate gradients for the path of 2D conic matrix computation. 
+	// Propagate gradients for the path of 2D conic matrix computation.
 	// Somewhat long, thus it is its own kernel rather than being part of 
 	// "preprocess". When done, loss gradient w.r.t. 3D means has been
 	// modified and gradient w.r.t. 3D covariance matrix has been computed.	
@@ -610,9 +659,11 @@ void BACKWARD::preprocess(
 		(glm::vec3*)scales,
 		(glm::vec4*)rotations,
 		scale_modifier,
+		viewmatrix,
 		projmatrix,
 		campos,
 		(float3*)dL_dmean2D,
+		dL_ddepths,
 		(glm::vec3*)dL_dmean3D,
 		dL_dcolor,
 		dL_dcov3D,
@@ -630,13 +681,16 @@ void BACKWARD::render(
 	const float2* means2D,
 	const float4* conic_opacity,
 	const float* colors,
+	const float* depths,
 	const float* final_Ts,
 	const uint32_t* n_contrib,
 	const float* dL_dpixels,
+	const float* dL_dpixels_depth,
 	float3* dL_dmean2D,
 	float4* dL_dconic2D,
 	float* dL_dopacity,
-	float* dL_dcolors)
+	float* dL_dcolors,
+	float* dL_ddepths)
 {
 	renderCUDA<NUM_CHANNELS> << <grid, block >> >(
 		ranges,
@@ -646,12 +700,15 @@ void BACKWARD::render(
 		means2D,
 		conic_opacity,
 		colors,
+		depths,
 		final_Ts,
 		n_contrib,
 		dL_dpixels,
+		dL_dpixels_depth,
 		dL_dmean2D,
 		dL_dconic2D,
 		dL_dopacity,
-		dL_dcolors
+		dL_dcolors,
+		dL_ddepths
 		);
 }

@@ -14,13 +14,13 @@ import torch
 from torch.nn import functional as F
 
 from .contracts import FrameInputs
-from .geometry import rotation_wc, world_to_camera
+from .geometry import rotation_wc
 from .hashing import sha256_file
 from .model import TrainableGaussians
 
 
 RENDERER_PROVENANCE_COMMIT = "cb65e4b86bc3bd8ed42174b72a62e8d3a3a71110"
-RENDERER_SOURCE_TREE_SHA256 = "ab438bd57dfd311f47d503739f0694622887be5a1be5c05399706c65c0b3f145"
+RENDERER_SOURCE_TREE_SHA256 = "aef6d60c069793be737de3906aaf988c840b1a20c0e9f6d113455a1bde40deb7"
 RENDERER_ADAPTER_SCHEMA = "sage-renderer-adapter-v1"
 RENDERER_BUILD_MANIFEST_SCHEMA = "sage-renderer-build-v1"
 RENDERER_BUILD_MANIFEST_NAME = "sage_build_identity.json"
@@ -483,28 +483,14 @@ def render(
         colors_precomp=model.colors.contiguous(), opacities=model.opacities.contiguous(),
         scales=scales, rotations=rotations,
     )
-    # The vendored autograd wrapper currently differentiates color outputs
-    # only. Use the fused depth/alpha channels for inference; training keeps
-    # the color-encoded depth pass so geometry losses retain their gradients.
-    if (
-        not torch.is_grad_enabled()
-        and raster_depth.ndim == 3
-        and raster_depth.shape[0] >= 2
-    ):
-        return RenderOutput(
-            rgb.permute(1, 2, 0),
-            raster_depth[0],
-            raster_depth[1].clamp(0, 1),
+    # The vendored CUDA backward differentiates the fused (accumulated depth,
+    # accumulated alpha) output directly, so a single rasterizer call now
+    # covers both inference and training. (Previously training re-rasterized
+    # the whole scene a second time, encoding depth as a fake "color" channel,
+    # because the backward kernel silently dropped the depth gradient.)
+    if raster_depth.ndim != 3 or raster_depth.shape[0] < 2:
+        raise RuntimeError(
+            "Vendored CUDA renderer did not return the fused depth/alpha "
+            f"output. Rebuild with: {RENDERER_REBUILD_COMMAND}"
         )
-
-    # Compatibility path for an extension built before the two-channel output.
-    camera_z = world_to_camera(means3d, frame.pose)[:, 2]
-    depth_silhouette_colors = torch.stack(
-        (camera_z, torch.ones_like(camera_z), camera_z.square()), dim=1
-    )
-    depth_silhouette, _, _ = backend.GaussianRasterizer(settings)(
-        means3D=means3d, means2D=torch.zeros_like(means3d),
-        colors_precomp=depth_silhouette_colors.contiguous(), opacities=model.opacities.contiguous(),
-        scales=scales, rotations=rotations,
-    )
-    return RenderOutput(rgb.permute(1, 2, 0), depth_silhouette[0], depth_silhouette[1].clamp(0, 1))
+    return RenderOutput(rgb.permute(1, 2, 0), raster_depth[0], raster_depth[1].clamp(0, 1))

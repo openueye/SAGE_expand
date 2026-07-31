@@ -521,17 +521,20 @@ class MappingEngine:
         commit_ordinal_by_frame_index: dict[int, int],
     ) -> torch.Tensor:
         """Vectorized age-in-mapping-commits, matching the row-event sidecar's age=0
-        special case (current-commit rows, including the frame-0 bootstrap population)."""
-        unique_created = torch.unique(created_at)
-        ordinals = torch.tensor(
-            [
-                0 if int(value) == current_frame_index
-                else mapping_commit_ordinal - commit_ordinal_by_frame_index[int(value)]
-                for value in unique_created.tolist()
-            ],
-            dtype=torch.int32, device=created_at.device,
+        special case (current-commit rows, including the frame-0 bootstrap population).
+
+        created_at only ever takes values from the small set of past commit frame
+        indices, so this gathers through a tiny frame_index -> commit_ordinal lookup
+        table instead of sorting the full (up to ~1M-row) Gaussian population.
+        """
+        device = created_at.device
+        frame_indices = list(commit_ordinal_by_frame_index.keys()) + [current_frame_index]
+        ordinals = list(commit_ordinal_by_frame_index.values()) + [mapping_commit_ordinal]
+        lookup = torch.zeros(max(frame_indices) + 1, dtype=torch.int32, device=device)
+        lookup[torch.tensor(frame_indices, dtype=torch.int64, device=device)] = torch.tensor(
+            ordinals, dtype=torch.int32, device=device,
         )
-        return ordinals[torch.searchsorted(unique_created, created_at)]
+        return mapping_commit_ordinal - lookup[created_at]
 
     def _prune_once(
         self,

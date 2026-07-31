@@ -277,15 +277,27 @@ class TrainableGaussians(nn.Module):
             raise ValueError("Append tensors have incompatible row shapes")
         if batch.source_types.dtype != torch.uint8 or batch.source_confidences.dtype != torch.float32:
             raise ValueError("Append provenance tensors have invalid dtypes")
-        if not bool(torch.isin(batch.source_types, torch.tensor([0, 1, 2, 3, 4], dtype=torch.uint8, device=batch.source_types.device)).all()):
-            raise ValueError("Append source_types contains an unsupported source ID")
+        # Data-dependent checks below are asserted asynchronously (matching the
+        # mapping-loss finiteness assert in mapper.py): each `bool(...)` here
+        # would otherwise force a CUDA sync on every append, and appends happen
+        # on essentially every mapping commit.
+        torch._assert_async(
+            torch.isin(batch.source_types, torch.tensor([0, 1, 2, 3, 4], dtype=torch.uint8, device=batch.source_types.device)).all(),
+            "Append source_types contains an unsupported source ID",
+        )
         combined = torch.cat((self.source_types, batch.source_types))
-        if self._mixes_lidar_families(combined):
-            raise ValueError("Append source_types would mix raw and SLAM LiDAR source families")
-        if not bool(torch.isfinite(batch.source_confidences).all()) or bool(((batch.source_confidences < 0) | (batch.source_confidences > 1)).any()):
-            raise ValueError("Append source_confidences must be finite and within [0, 1]")
-        if not all(bool(torch.isfinite(tensor).all()) for tensor in tensors[:5]):
-            raise ValueError("Append parameter tensors must be finite")
+        torch._assert_async(
+            ~self._mixes_lidar_families(combined),
+            "Append source_types would mix raw and SLAM LiDAR source families",
+        )
+        torch._assert_async(
+            torch.isfinite(batch.source_confidences).all() & ((batch.source_confidences >= 0) & (batch.source_confidences <= 1)).all(),
+            "Append source_confidences must be finite and within [0, 1]",
+        )
+        torch._assert_async(
+            torch.stack([torch.isfinite(tensor).all() for tensor in tensors[:5]]).all(),
+            "Append parameter tensors must be finite",
+        )
 
     def _replace(self, **values: torch.Tensor) -> None:
         for name in self.PARAMETER_NAMES:
@@ -303,24 +315,38 @@ class TrainableGaussians(nn.Module):
             raise ValueError("Gaussian parameters and provenance buffers must share a device")
         if self.gaussian_ids.dtype != torch.int64 or self.created_at.dtype != torch.int64 or self.source_types.dtype != torch.uint8 or self.source_confidences.dtype != torch.float32:
             raise ValueError("Gaussian provenance buffers have invalid dtypes")
-        if count > 1 and not bool((self.gaussian_ids[1:] > self.gaussian_ids[:-1]).all()):
-            raise ValueError("Gaussian IDs must be strictly increasing")
-        if not bool(torch.isin(self.source_types, torch.tensor([0, 1, 2, 3, 4], dtype=torch.uint8, device=self.source_types.device)).all()):
-            raise ValueError("Gaussian source_types contains an unsupported source ID")
-        if self._mixes_lidar_families(self.source_types):
-            raise ValueError("Gaussian source_types mix raw and SLAM LiDAR source families")
-        if not bool(torch.isfinite(self.source_confidences).all()) or bool(((self.source_confidences < 0) | (self.source_confidences > 1)).any()):
-            raise ValueError("Gaussian source_confidences must be finite and within [0, 1]")
         if self.log_scales.ndim != 2 or self.log_scales.shape[1] != 3:
             raise ValueError("Gaussian log_scales must be Nx3")
-        if not all(bool(torch.isfinite(parameter).all()) for parameter in self.parameters()):
-            raise ValueError("Gaussian parameters must be finite")
+        # Data-dependent checks below are asserted asynchronously (matching the
+        # mapping-loss finiteness assert in mapper.py): this runs on every
+        # append/prune, and a `bool(...)` here would force a CUDA sync each time.
+        if count > 1:
+            torch._assert_async(
+                (self.gaussian_ids[1:] > self.gaussian_ids[:-1]).all(),
+                "Gaussian IDs must be strictly increasing",
+            )
+        torch._assert_async(
+            torch.isin(self.source_types, torch.tensor([0, 1, 2, 3, 4], dtype=torch.uint8, device=self.source_types.device)).all(),
+            "Gaussian source_types contains an unsupported source ID",
+        )
+        torch._assert_async(
+            ~self._mixes_lidar_families(self.source_types),
+            "Gaussian source_types mix raw and SLAM LiDAR source families",
+        )
+        torch._assert_async(
+            torch.isfinite(self.source_confidences).all() & ((self.source_confidences >= 0) & (self.source_confidences <= 1)).all(),
+            "Gaussian source_confidences must be finite and within [0, 1]",
+        )
+        torch._assert_async(
+            torch.stack([torch.isfinite(parameter).all() for parameter in self.parameters()]).all(),
+            "Gaussian parameters must be finite",
+        )
 
     @staticmethod
-    def _mixes_lidar_families(source_types: torch.Tensor) -> bool:
+    def _mixes_lidar_families(source_types: torch.Tensor) -> torch.Tensor:
         raw = torch.isin(source_types, torch.tensor([0, 1], dtype=torch.uint8, device=source_types.device)).any()
         slam = torch.isin(source_types, torch.tensor([3, 4], dtype=torch.uint8, device=source_types.device)).any()
-        return bool(raw and slam)
+        return raw & slam
 
     @staticmethod
     def _normalize_log_scales(log_scales: torch.Tensor) -> torch.Tensor:
