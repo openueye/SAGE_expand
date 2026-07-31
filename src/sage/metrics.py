@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from contextlib import contextmanager
 import importlib
 import os
 from pathlib import Path
@@ -21,6 +22,26 @@ TORCHVISION_VERSION_PREFIX = "0.20.1"
 LPIPS_CALIBRATION_RELATIVE_PATH = "functional/image/lpips_models/alex.pth"
 LPIPS_CALIBRATION_SHA256 = "df73285e35b22355a2df87cdb6b70b343713b667eddbda73e1977e0c860835c0"
 _LPIPS_BUILD_LOCK = Lock()
+warnings.filterwarnings(
+    "ignore",
+    category=FutureWarning,
+    message=r".*weights_only=False.*",
+)
+
+
+@contextmanager
+def _force_torch_load_weights_only() -> object:
+    original_torch_load = torch.load
+
+    def load_with_weights_only(*args, **kwargs):
+        kwargs.setdefault("weights_only", True)
+        return original_torch_load(*args, **kwargs)
+
+    torch.load = load_with_weights_only
+    try:
+        yield
+    finally:
+        torch.load = original_torch_load
 
 
 @dataclass(frozen=True)
@@ -113,16 +134,14 @@ def _build_lpips(features: torch.nn.Sequential) -> torch.nn.Module:
     with _LPIPS_BUILD_LOCK:
         lpips_module._get_tv_model_features = explicit_features
         try:
-            with warnings.catch_warnings():
-                warnings.filterwarnings(
-                    "ignore",
-                    category=FutureWarning,
-                    message=(
-                        r"You are using `torch\\.load` with `weights_only=False` "
-                        r"\\(the current default value\\), which uses the default pickle module"
-                    ),
-                )
-                return metric_type(net_type="alex", normalize=True).eval().requires_grad_(False)
+            with _force_torch_load_weights_only():
+                with warnings.catch_warnings():
+                    warnings.filterwarnings(
+                        "ignore",
+                        category=FutureWarning,
+                        message=".*weights_only=False.*",
+                    )
+                    return metric_type(net_type="alex", normalize=True).eval().requires_grad_(False)
         finally:
             lpips_module._get_tv_model_features = original_resolver
 
