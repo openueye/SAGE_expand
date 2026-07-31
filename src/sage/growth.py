@@ -82,6 +82,8 @@ class GrowthBuilder:
         stats = self._empty_stats(active_descriptors)
         proposals: list[tuple[SourceType, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]] = []
         occupied = torch.zeros(expected, dtype=torch.bool, device=self.device)
+        reference_depth: torch.Tensor | None = None
+        reference_base: torch.Tensor | None = None
         for evidence in growth_inputs.evidences:
             descriptor = descriptor_for_type(evidence.source_type)
             source_stats = stats[descriptor.name]
@@ -90,6 +92,21 @@ class GrowthBuilder:
             confidence = torch.as_tensor(evidence.confidence, dtype=torch.float32, device=self.device)
             base = valid & torch.isfinite(depth) & (depth > 0)
             source_stats["proposed"] = int(base.sum())
+            if descriptor.priority == 0:
+                reference_depth, reference_base = depth, base
+            elif reference_base is not None:
+                overlap = base & reference_base
+                overlap_count = int(overlap.sum())
+                if overlap_count >= self.config.frame_bias_min_overlap_px:
+                    bias = (depth[overlap] - reference_depth[overlap]).mean()
+                    reference_mean = reference_depth[overlap].mean()
+                    tolerance = max(
+                        self.config.frame_bias_threshold.absolute_m,
+                        self.config.frame_bias_threshold.relative * float(reference_mean),
+                    )
+                    if float(bias.abs()) > tolerance:
+                        _increment_rejection(source_stats, "frame_bias", int(base.sum()))
+                        continue
             in_range = base & (depth >= self.config.min_candidate_depth_m) & (depth <= self.config.max_candidate_depth_m)
             _increment_rejection(source_stats, "depth_out_of_range", int((base & ~in_range).sum()))
             confidence_threshold = source_policy_value(

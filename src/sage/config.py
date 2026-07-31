@@ -222,6 +222,8 @@ class GrowthConfig:
     confidence_thresholds: dict[str, float] | None = None
     residual_thresholds: dict[str, ResidualThreshold] | None = None
     depth_policy: str = RAW_ACCUMULATED_DEPTH_POLICY
+    frame_bias_threshold: ResidualThreshold = ResidualThreshold(0.10, 0.02)
+    frame_bias_min_overlap_px: int = 50
 
     def __post_init__(self) -> None:
         if self.depth_policy != RAW_ACCUMULATED_DEPTH_POLICY:
@@ -254,6 +256,10 @@ class GrowthConfig:
             raise ValueError("Candidate depth range is invalid")
         if self.candidate_duplicate_3d_threshold_m <= 0:
             raise ValueError("Candidate duplicate threshold must be positive")
+        if not isinstance(self.frame_bias_threshold, ResidualThreshold):
+            raise ValueError("frame_bias_threshold must be a ResidualThreshold")
+        if type(self.frame_bias_min_overlap_px) is not int or self.frame_bias_min_overlap_px < 1:
+            raise ValueError("frame_bias_min_overlap_px must be a positive integer")
         object.__setattr__(self, "confidence_thresholds", dict(confidence))
         object.__setattr__(self, "residual_thresholds", dict(residual))
 
