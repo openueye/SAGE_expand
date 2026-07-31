@@ -12,14 +12,14 @@ input:
 spnet:
   model_id: spnet-large-300
   depth_scale_m: 200.0
-  confidence: 0.4
+  confidence: 0.6
   sample_stride: 8
 
 mapping:
   map_every: 5
   keyframe_every: 5
   iterations: 90
-  prune_every: 30
+  prune_every: 15
   prune_stop_after: 90
   learning_rates:
     means3d: 0.00016
@@ -30,33 +30,33 @@ mapping:
   initial_opacity: 0.5
   growth:
     coverage_alpha_threshold: 0.99
-    rgb_residual_threshold: 0.05
+    rgb_residual_threshold: 0.15
     min_candidate_depth_m: 0.1
     max_candidate_depth_m: 200.0
-    candidate_duplicate_3d_threshold_m: 0.05
+    candidate_duplicate_3d_threshold_m: 0.1
     confidence_thresholds:
       LIDAR_SLAM_CENTER: 0.0
       LIDAR_SLAM_FUSED5: 0.5
-      SPNET_BLIND: 0.25
+      SPNET_BLIND: 0.2
     residual_thresholds:
       LIDAR_SLAM_CENTER: {absolute_m: 0.15, relative: 0.03}
-      LIDAR_SLAM_FUSED5: {absolute_m: 0.25, relative: 0.05}
-      SPNET_BLIND: {absolute_m: 0.35, relative: 0.07}
+      LIDAR_SLAM_FUSED5: {absolute_m: 0.15, relative: 0.05}
+      SPNET_BLIND: {absolute_m: 0.20, relative: 0.07}
   pruning:
     opacity_thresholds:
       LIDAR_SLAM_CENTER: 0.05
-      LIDAR_SLAM_FUSED5: 0.083
-      SPNET_BLIND: 0.167
-    spnet_min_prune_age: 30
+      LIDAR_SLAM_FUSED5: 0.10
+      SPNET_BLIND: 0.20
+    spnet_min_prune_age: 15
     spnet_scale_ceiling_m: null
   loss:
     image_weight: 1.0
-    ssim_weight: 0.2
-    depth_weight: 0.268780155032039
+    ssim_weight: 0.4
+    depth_weight: 0.5
     alpha_support: 0.85
 
 refinement:
-  iterations: 8000
+  iterations: 4000
   color_learning_rate: 0.000625
   opacity_learning_rate: 0.0000625
   opacity_anchor_weight: 0.1
@@ -76,7 +76,7 @@ refinement:
   exposure_bias_bound: 0.25
   exposure_anchor_weight: 10.0
   ssim_weight: 0.2
-  milestones: [1000, 2000, 4000, 6000, 8000]
+  milestones: [2000, 4000]
 
 evaluation:
   frame_selection: all

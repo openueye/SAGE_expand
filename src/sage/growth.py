@@ -143,7 +143,7 @@ class GrowthBuilder:
         focal = (frame.intrinsics.fx + frame.intrinsics.fy) * 0.5
         batch = GaussianAppendBatch(
             points, colors, torch.full((points.shape[0], 1), self.opacity_logit, dtype=torch.float32, device=self.device),
-            torch.log((camera_depths / focal).clamp_min(1e-4)).unsqueeze(1),
+            torch.log((camera_depths / focal).clamp_min(1e-4)).unsqueeze(1).repeat(1, 3),
             torch.tensor([[1.0, 0.0, 0.0, 0.0]], dtype=torch.float32, device=self.device).repeat(points.shape[0], 1),
             source_types, confidences,
         )

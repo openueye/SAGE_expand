@@ -73,7 +73,7 @@ class TrainableGaussians(nn.Module):
         source_types = torch.as_tensor(frame.mapping.source_types[rows, columns], dtype=torch.uint8)
         source_confidences = torch.as_tensor(frame.mapping.confidences[rows, columns], dtype=torch.float32)
         focal = (frame.intrinsics.fx + frame.intrinsics.fy) * 0.5
-        log_scales = torch.log((z / focal).clamp_min(1e-4)).unsqueeze(1)
+        log_scales = torch.log((z / focal).clamp_min(1e-4)).unsqueeze(1).repeat(1, 3)
         count = points.shape[0]
         target = torch.device(device)
         opacity_logit = gaussian_initialization.opacity_logit

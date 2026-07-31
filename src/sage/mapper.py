@@ -555,7 +555,13 @@ class MappingEngine:
         commit_ordinal_by_frame_index: dict[int, int],
     ) -> PruningResult:
         opacity_keep = opacity_keep_mask(model.opacities, model.source_types, self.pruning.opacity_thresholds)
-        policy_keep = opacity_keep
+        scale_keep = torch.ones_like(opacity_keep)
+        ceiling = self.pruning.spnet_scale_ceiling_m
+        if ceiling is not None:
+            is_spnet = model.source_types == int(SourceType.SPNET_BLIND)
+            over_ceiling = is_spnet & (model.scales.detach().max(dim=1).values > ceiling)
+            scale_keep = ~over_ceiling
+        policy_keep = opacity_keep & scale_keep
         newborn = (current_frame_index > 0) & (model.created_at == current_frame_index)
         row_age = self._age_in_mapping_commits(
             model.created_at,
@@ -575,11 +581,13 @@ class MappingEngine:
         removed_mask = ~keep
         active_descriptors = descriptors_for_types(model.source_types)
         by_source = {descriptor.name: int((removed_mask & (model.source_types == int(descriptor.source_type))).sum()) for descriptor in active_descriptors}
-        opacity_only_mask = removed_mask & ~opacity_keep
+        opacity_only_mask = removed_mask & ~opacity_keep & scale_keep
+        scale_only_mask = removed_mask & opacity_keep & ~scale_keep
+        opacity_and_scale_mask = removed_mask & ~opacity_keep & ~scale_keep
         by_reason = {
             "opacity_only": int(opacity_only_mask.sum()),
-            "scale_only": 0,
-            "opacity_and_scale": 0,
+            "scale_only": int(scale_only_mask.sum()),
+            "opacity_and_scale": int(opacity_and_scale_mask.sum()),
         }
         newborn_protected_mask = newborn & ~policy_keep
         mature_removed_mask = removed_mask & ~newborn

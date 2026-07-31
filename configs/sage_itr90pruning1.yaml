@@ -48,6 +48,7 @@ mapping:
       LIDAR_SLAM_FUSED5: 0.083
       SPNET_BLIND: 0.167
     spnet_min_prune_age: 30
+    spnet_scale_ceiling_m: null
   loss:
     image_weight: 1.0
     ssim_weight: 0.2

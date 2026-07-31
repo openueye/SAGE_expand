@@ -48,7 +48,12 @@ mapping:
       LIDAR_SLAM_FUSED5: 0.083
       SPNET_BLIND: 0.167
     spnet_min_prune_age: 30
-    spnet_scale_ceiling_m: null
+    # 唯一相对 sage.yaml 的改动：只给 SPNET_BLIND 加一个 world-space scale 上限。
+    # 0.1m 的取值依据: 02_TestResult/sage_expand_downtown1_seed0_V2 诊断报告里
+    # LIDAR_SLAM_CENTER/FUSED5 的 scale_geo p99 分别是 0.049m/0.054m，取约2倍
+    # 留出余量给合法的粗粒度背景填补，同时切掉 SPNET_BLIND 自身长尾
+    # (p90=0.093m, p95=0.224m, p99=0.816m) 里明显异常的悬浮团块部分。
+    spnet_scale_ceiling_m: 0.1
   loss:
     image_weight: 1.0
     ssim_weight: 0.2
