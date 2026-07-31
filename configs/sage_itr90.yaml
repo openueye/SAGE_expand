@@ -1,7 +1,7 @@
 seed: 0
 
 runtime:
-  model_root: models
+  model_root: ../models
   require_clean_worktree: false
 
 input:
