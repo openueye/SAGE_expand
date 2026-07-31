@@ -144,7 +144,7 @@ def write_run_artifacts(
                 if isinstance(receipt.get("runtime"), dict) else "unmeasured"
             ),
         }
-        _validate_completion_receipt(
+        validate_sage_completion_receipt(
             receipt,
             expected_adapter=str(adapter) if adapter is not None else None,
             expected_source_mode=input_identity.source_mode,
