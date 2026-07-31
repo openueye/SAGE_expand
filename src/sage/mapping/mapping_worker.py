@@ -104,7 +104,7 @@ def _resolved_config(
     calibration: Path | None,
     write_through: Path | None,
 ) -> SageConfig:
-    from .method_config import SageInput, SageMethodConfig
+    from ..method_config import SageInput, SageMethodConfig
 
     if data_root is None:
         raise ValueError("SAGE input root is required")
@@ -222,7 +222,7 @@ def _verify(
     write_through: Path | None,
     require_models: bool,
 ) -> int:
-    from .verify import execution_preflight, verify
+    from ..verify import execution_preflight, verify
 
     config = _resolved_config(
         config_path,
@@ -335,7 +335,7 @@ def _train_preflight(
     write_through: Path | None,
     device: str,
 ) -> int:
-    from .verify import execution_preflight, verify
+    from ..verify import execution_preflight, verify
 
     if config.output_dir.exists():
         raise ValueError(f"Refusing an existing training output path: {config.output_dir}")

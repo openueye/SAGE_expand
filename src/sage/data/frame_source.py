@@ -195,7 +195,7 @@ class PreparedSceneFrameSource:
 
 
 def _matrix_to_pose(matrix: np.ndarray) -> Pose:
-    from .data.rosbag.poses import matrix_to_quaternion_xyzw
+    from .rosbag.poses import matrix_to_quaternion_xyzw
 
     quaternion = matrix_to_quaternion_xyzw(np.asarray(matrix, dtype=np.float64)[:3, :3])
     return Pose(
@@ -218,7 +218,7 @@ class OdinBagFixedLagFrameSource:
             raise ValueError("FrameSource frame_limit must be -1 or a positive integer")
         if config.input_adapter != "rosbag-fixed-lag-v1":
             raise ValueError("OdinBagFixedLagFrameSource requires input_adapter=rosbag-fixed-lag-v1")
-        from .data.rosbag.streaming import OdinBagFixedLagResultStream
+        from .rosbag.streaming import OdinBagFixedLagResultStream
         if config.preparation_profile is None:
             raise ValueError("Streaming scene config requires preparation_profile")
         self._stream = OdinBagFixedLagResultStream(

@@ -44,8 +44,11 @@ def _verify_conda_prefix() -> None:
 
 
 def execution_preflight(config: object, *, device: str = "cuda") -> dict[str, object]:
-    from .config import SageConfig
-    from .contracts import (
+    from .data.providers.spnet import OnlineSPNetProvider
+    from .engine.model import TrainableGaussians
+    from .engine.rendering import render
+    from .foundation.config import SageConfig
+    from .foundation.contracts import (
         CameraIntrinsics,
         DepthEvidence,
         FrameInputs,
@@ -55,9 +58,6 @@ def execution_preflight(config: object, *, device: str = "cuda") -> dict[str, ob
         Pose,
         SourceType,
     )
-    from .model import TrainableGaussians
-    from .providers.spnet import OnlineSPNetProvider
-    from .rendering import render
 
     if not isinstance(config, SageConfig):
         raise ValueError("Execution preflight requires the frozen SAGE configuration")
@@ -145,19 +145,19 @@ def verify(
     if require_clean_worktree and dirty:
         raise RuntimeError("Clean worktree required")
 
-    from .metrics import _calibration_path
-    from .code_identity import repository_code_identity
-    from .model_registry import (
+    from .data.providers.spnet import (
+        SPNET_SOURCE_ID,
+        verify_spnet_source_identity,
+    )
+    from .engine.metrics import _calibration_path
+    from .engine.model_registry import (
         ALEXNET_MODEL_ID,
         SPNET_MODEL_ID,
         ModelRegistry,
         default_registry_path,
     )
-    from .providers.spnet import (
-        SPNET_SOURCE_ID,
-        verify_spnet_source_identity,
-    )
-    from .rendering import _load_renderer_extension, capture_renderer_identity
+    from .engine.rendering import _load_renderer_extension, capture_renderer_identity
+    from .foundation.code_identity import repository_code_identity
 
     renderer_package = _load_renderer_extension()
     renderer_identity = capture_renderer_identity()
@@ -229,7 +229,7 @@ def verify(
         "conda_lock_path": str((ROOT / "conda-lock.yml").resolve()),
         "conda_lock_sha256": sha256_file(ROOT / "conda-lock.yml"),
     }
-    from .runtime_identity import runtime_identity_from_report
+    from .foundation.runtime_identity import runtime_identity_from_report
     report["runtime_identity"] = runtime_identity_from_report(report)
     return report
 

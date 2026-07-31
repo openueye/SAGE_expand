@@ -907,7 +907,7 @@ def _source_layout(messages: tuple[BagMessage, ...], profile: PreparationProfile
 
 
 def _code_identity() -> dict[str, object]:
-    from ...code_identity import repository_code_identity
+    from ...foundation.code_identity import repository_code_identity
 
     repository = Path(__file__).resolve().parents[4]
     environment_lock = repository / "conda-lock.yml"
