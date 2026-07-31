@@ -90,7 +90,7 @@ def formal_train_command(
     command = [
         sys.executable,
         "-m",
-        "sage.mapping_worker",
+        "sage.mapping.mapping_worker",
         "train",
         "--config",
         str(Path(config_path).resolve()),

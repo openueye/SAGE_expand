@@ -390,7 +390,7 @@ def _add_input_arguments(parser: argparse.ArgumentParser) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="sage.mapping_worker",
+        prog="sage.mapping.mapping_worker",
         description="Internal SAGE structure-mapping implementation",
     )
     commands = parser.add_subparsers(dest="command", required=True)
