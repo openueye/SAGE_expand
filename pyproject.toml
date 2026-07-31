@@ -34,4 +34,4 @@ where = ["src"]
 "sage/models" = ["models/manifest.json"]
 
 [tool.setuptools.package-data]
-"sage.providers" = ["spnet_identity.json"]
+"sage.data.providers" = ["spnet_identity.json"]
