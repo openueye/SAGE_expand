@@ -123,16 +123,11 @@ class SceneConfig:
 
 @dataclass(frozen=True)
 class GrowthSourcesConfig:
-    spnet: "SPNetDisabledConfig | SPNetOnlineConfig" = field(default_factory=lambda: SPNetDisabledConfig())
+    spnet: "SPNetOnlineConfig"
 
     def __post_init__(self) -> None:
-        if not isinstance(self.spnet, (SPNetDisabledConfig, SPNetOnlineConfig)):
-            raise ValueError("growth_sources.spnet must be disabled or online")
-
-
-@dataclass(frozen=True)
-class SPNetDisabledConfig:
-    mode: str = field(default="disabled", init=False)
+        if not isinstance(self.spnet, SPNetOnlineConfig):
+            raise ValueError("growth_sources.spnet must be online")
 
 
 @dataclass(frozen=True)

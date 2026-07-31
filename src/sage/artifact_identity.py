@@ -25,16 +25,12 @@ _DEPENDENCY_FIELDS = {
         },
     },
     "spnet": {
-        "disabled": {"kind"},
-        "unavailable": {"kind", "purpose", "model_id"},
         "repository-online": {
             "kind", "source_id", "model_id", "source_commit", "weights_sha256", "source_tree_sha256",
             "depth_scale_m", "confidence", "sample_stride", "adapter", "actual_invocations",
         },
     },
     "metric": {
-        "disabled": {"kind"},
-        "unavailable": {"kind", "purpose"},
         "repository-offline": {
             "kind", "model_id", "weights_sha256", "evaluator_schema",
             "torchmetrics_version", "torchvision_version", "calibration_sha256",
@@ -129,32 +125,21 @@ class DependencyIdentity:
                 _validate_spnet_adapter_payload(payload["adapter"], execution=False)
 
     @classmethod
-    def for_repository_renderer(
-        cls, renderer: dict[str, object], *, metric_identity: object | None = None,
-    ) -> "DependencyIdentity":
-        metric = _metric_dependency_payload(metric_identity) if metric_identity is not None else {
-            "kind": "unavailable", "purpose": "evaluation",
-        }
-        return cls(renderer=deepcopy(renderer), spnet={"kind": "disabled"}, metric=metric)
-
-    @classmethod
-    def for_repository_renderer_online_spnet(
+    def for_renderer_with_dependencies(
         cls,
         renderer: dict[str, object],
         spnet_identity: object,
         *,
         actual_invocations: int,
-        metric_identity: object | None = None,
+        metric_identity: object,
     ) -> "DependencyIdentity":
         dependency_payload = getattr(spnet_identity, "dependency_payload", None)
         if not callable(dependency_payload):
-            raise ValueError("Repository-online SPNet identity lacks dependency_payload()")
+            raise ValueError("Online SPNet identity lacks dependency_payload()")
         return cls(
             renderer=deepcopy(renderer),
             spnet=dependency_payload(actual_invocations=actual_invocations),
-            metric=_metric_dependency_payload(metric_identity) if metric_identity is not None else {
-                "kind": "unavailable", "purpose": "evaluation",
-            },
+            metric=_metric_dependency_payload(metric_identity),
         )
 
     def payload(self) -> dict[str, object]:
@@ -164,7 +149,7 @@ class DependencyIdentity:
 def _metric_dependency_payload(metric_identity: object) -> dict[str, object]:
     dependency_payload = getattr(metric_identity, "dependency_payload", None)
     if not callable(dependency_payload):
-        raise ValueError("Repository-offline metric identity lacks dependency_payload()")
+        raise ValueError("Metric identity lacks dependency_payload()")
     payload = dependency_payload()
     if not isinstance(payload, dict) or payload.get("kind") != "repository-offline":
         raise ValueError("Metric identity must provide the repository-offline dependency branch")

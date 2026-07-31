@@ -20,7 +20,6 @@ from .mapping_artifacts import write_run_artifacts
 from .config import (
     ALL_ACCEPTED_FRAME_LIMIT,
     SageConfig,
-    SPNetDisabledConfig,
 )
 from .execution import (
     EXECUTION_CHILD_ENV,
@@ -55,9 +54,7 @@ def _report_frames(frames, *, expected_total: int):
         yield frame
 
 
-def _build_spnet_provider(config: SageConfig, *, device: str) -> SPNetEvidenceProvider | None:
-    if isinstance(config.growth_sources.spnet, SPNetDisabledConfig):
-        return None
+def _build_spnet_provider(config: SageConfig, *, device: str) -> SPNetEvidenceProvider:
     return OnlineSPNetProvider(
         config.growth_sources.spnet,
         device=device,
@@ -68,15 +65,11 @@ def _build_spnet_provider(config: SageConfig, *, device: str) -> SPNetEvidencePr
 def _dependency_identity(
     renderer_identity: dict[str, object],
     metric_identity: object,
-    spnet_provider: SPNetEvidenceProvider | None,
+    spnet_provider: SPNetEvidenceProvider,
     *,
     actual_spnet_invocations: int,
 ) -> DependencyIdentity:
-    if spnet_provider is None:
-        return DependencyIdentity.for_repository_renderer(
-            renderer_identity, metric_identity=metric_identity,
-        )
-    return DependencyIdentity.for_repository_renderer_online_spnet(
+    return DependencyIdentity.for_renderer_with_dependencies(
         renderer_identity,
         spnet_provider.identity,
         actual_invocations=actual_spnet_invocations,

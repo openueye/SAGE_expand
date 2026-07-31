@@ -276,9 +276,7 @@ def write_run_artifacts(
     return RunArtifacts(output, output / "checkpoint.pt", output / "run_manifest.json", output / "map.ply")
 
 
-def _execution_adapter_payload(spnet_identity: object | None) -> dict[str, object] | None:
-    if spnet_identity is None:
-        return None
+def _execution_adapter_payload(spnet_identity: object) -> dict[str, object]:
     payload = getattr(spnet_identity, "execution_adapter_payload", None)
     if not callable(payload):
         raise ValueError("SPNet execution identity lacks execution_adapter_payload()")

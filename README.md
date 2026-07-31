@@ -4,7 +4,9 @@
 Gaussian Enhancement). One command turns a calibrated finite Odin ROSBAG, or a
 compatible Prepared Scene, into a structure map, an appearance-refined final
 map, and an evaluation over every accepted frame. LiDAR remains the metric
-authority; SPNet supplies guarded dense-normal supervision only.
+authority; SPNet supplies guarded dense-normal supervision only, and both
+SPNet/AlexNet artifacts are required runtime dependencies for mapping and
+evaluation.
 
 ## Install
 
@@ -40,8 +42,8 @@ runtime:
 ```
 
 The path is relative to the YAML file and overrides `SAGE_MODEL_ROOT`.
-`third_party/SPNet` is used by default; set `SAGE_SPNET_ROOT` only for a
-different verified checkout.
+`third_party/SPNet` is the required local checkout by default; set
+`SAGE_SPNET_ROOT` only for a different verified clone.
 
 ## Run
 

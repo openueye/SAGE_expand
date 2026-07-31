@@ -37,12 +37,9 @@ def is_mapping_frame(frame_index: int, *, map_every: int) -> bool:
 def should_invoke_spnet(
     frame_index: int,
     mapping: MappingConfig,
-    *,
-    spnet_enabled: bool,
 ) -> bool:
     return (
-        spnet_enabled
-        and frame_index > 0
+        frame_index > 0
         and is_mapping_frame(frame_index, map_every=mapping.map_every)
     )
 
@@ -50,8 +47,6 @@ def should_invoke_spnet(
 def expected_spnet_invocations(
     processed_frames: int,
     mapping: MappingConfig,
-    *,
-    spnet_enabled: bool,
 ) -> int:
     """Derive expected calls after EOF from the independently observed run length."""
     if type(processed_frames) is not int or processed_frames < 0:
@@ -60,7 +55,6 @@ def expected_spnet_invocations(
         should_invoke_spnet(
             frame_index,
             mapping,
-            spnet_enabled=spnet_enabled,
         )
         for frame_index in range(processed_frames)
     )
@@ -120,7 +114,7 @@ class MappingCommit:
     final_depth_valid_pixels: int
     final_depth_mean_alpha: float
     spnet_invoked: bool = False
-    spnet_mode: str | None = None
+    spnet_mode: str = "online"
     spnet_valid_pixels: int = 0
     spnet_inference_seconds: float = 0.0
     diagnostics: dict[str, object] = field(default_factory=dict)
@@ -137,7 +131,7 @@ class MappingRun:
     spnet_expected_invocations: int = 0
     spnet_actual_invocations: int = 0
     spnet_inference_seconds: tuple[float, ...] = ()
-    spnet_identity: object | None = None
+    spnet_identity: object
     optimization_variant: str = ODIN_GLOBAL_CURRENT_ANCHORED_VARIANT
     optimizer_lifecycle: str = "persistent"
     optimizer_final_step: int | None = None
@@ -156,7 +150,7 @@ class MappingEngine:
         device: str | torch.device = "cuda",
         renderer: Renderer | None = None,
         metric_evaluator: Callable[[torch.Tensor, torch.Tensor], object] | None = None,
-        spnet_provider: SPNetEvidenceProvider | None = None,
+        spnet_provider: SPNetEvidenceProvider,
         gaussian_initialization: GaussianInitializationConfig,
         loss_policy: MappingLossConfig,
         seed: int = 0,
@@ -263,11 +257,8 @@ class MappingEngine:
                 spnet_invoked = False
                 spnet_valid_pixels = 0
                 spnet_inference_elapsed = 0.0
-                provider_identity = self.spnet_provider.identity if self.spnet_provider is not None else None
-                commit_spnet_mode = (
-                    provider_identity.mode if provider_identity is not None
-                    else "disabled"
-                )
+                provider_identity = self.spnet_provider.identity
+                commit_spnet_mode = provider_identity.mode
                 spnet_available = any(
                     evidence.source_type == SourceType.SPNET_BLIND
                     for evidence in frame.growth.evidences
@@ -275,20 +266,18 @@ class MappingEngine:
                 invoke_spnet = should_invoke_spnet(
                     frame.index,
                     self.config,
-                    spnet_enabled=self.spnet_provider is not None,
                 )
                 if frame.index > 0:
-                    if self.spnet_provider is not None:
-                        anchor_types = {
-                            descriptor_for_type(evidence.source_type).name
-                            for evidence in frame.growth.evidences
-                            if evidence.source_type in {
-                                SourceType.LIDAR_RAW, SourceType.LIDAR_SLAM_CENTER,
-                            }
+                    anchor_types = {
+                        descriptor_for_type(evidence.source_type).name
+                        for evidence in frame.growth.evidences
+                        if evidence.source_type in {
+                            SourceType.LIDAR_RAW, SourceType.LIDAR_SLAM_CENTER,
                         }
-                        if len(anchor_types) != 1:
-                            raise ValueError("SPNet run requires exactly one profile center anchor source")
-                        spnet_anchor_source_types.update(anchor_types)
+                    }
+                    if len(anchor_types) != 1:
+                        raise ValueError("SPNet run requires exactly one profile center anchor source")
+                    spnet_anchor_source_types.update(anchor_types)
                     extra_evidences = ()
                     if invoke_spnet:
                         if self.device.type == "cuda":
@@ -504,7 +493,6 @@ class MappingEngine:
         expected_spnet_invocations_for_run = expected_spnet_invocations(
             processed_frames,
             self.config,
-            spnet_enabled=self.spnet_provider is not None,
         )
         return MappingRun(
             model,
@@ -515,7 +503,7 @@ class MappingEngine:
             spnet_expected_invocations=expected_spnet_invocations_for_run,
             spnet_actual_invocations=actual_spnet_invocations,
             spnet_inference_seconds=tuple(spnet_inference_seconds),
-            spnet_identity=self.spnet_provider.identity if self.spnet_provider is not None else None,
+            spnet_identity=self.spnet_provider.identity,
             optimization_variant=self.config.optimization_variant,
             optimizer_lifecycle="persistent",
             optimizer_final_step=optimizer_final_step,
