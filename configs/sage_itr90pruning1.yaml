@@ -19,7 +19,7 @@ mapping:
   map_every: 5
   keyframe_every: 5
   iterations: 90
-  prune_every: 90
+  prune_every: 30
   prune_stop_after: 90
   learning_rates:
     means3d: 0.00016
@@ -54,15 +54,15 @@ mapping:
   loss:
     image_weight: 1.0
     ssim_weight: 0.2
-    depth_weight: 0.268780155032039
+    depth_weight: 0.25
     alpha_support: 0.85
 
 refinement:
-  iterations: 8000
+  iterations: 4000
   color_learning_rate: 0.000625
   opacity_learning_rate: 0.0000625
   opacity_anchor_weight: 0.1
-  lidar_depth_weight: 0.268780155032039
+  lidar_depth_weight: 0.25
   dense_normal_weight: 0.05
   dense_normal_edge_weight_gamma: 10.0
   dense_normal_alpha_support: 0.85
@@ -78,7 +78,7 @@ refinement:
   exposure_bias_bound: 0.25
   exposure_anchor_weight: 10.0
   ssim_weight: 0.2
-  milestones: [1000, 2000, 4000, 6000, 8000]
+  milestones: [1000, 2000, 4000]
 
 evaluation:
   frame_selection: all
