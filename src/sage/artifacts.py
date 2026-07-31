@@ -539,9 +539,7 @@ def write_model_ply(path: Path, model: object) -> None:
         (model.colors.detach() - 0.5) / 0.28209479177387814
     ).cpu().numpy()
     opacity = model.opacity_logits.detach().cpu().reshape(-1).numpy()
-    scales = model.log_scales.detach()
-    if scales.shape[1] == 1:
-        scales = scales.repeat(1, 3)
+    scales = model.scales.detach()
     rotations = F.normalize(
         model.rotations.detach(),
         dim=1,

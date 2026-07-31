@@ -101,9 +101,7 @@ def _write_ply(path: Path, run: MappingRun) -> None:
     normals = np.zeros_like(means)
     sh_dc = ((model.colors.detach() - 0.5) / 0.28209479177387814).cpu().numpy()
     opacity = model.opacity_logits.detach().cpu().reshape(-1).numpy()
-    scales = model.log_scales.detach()
-    if scales.shape[1] == 1:
-        scales = scales.repeat(1, 3)
+    scales = model.scales.detach()
     rotations = F.normalize(model.rotations.detach(), dim=1).cpu().numpy()
     float_names = (
         "x", "y", "z", "nx", "ny", "nz", "f_dc_0", "f_dc_1", "f_dc_2", "opacity",
