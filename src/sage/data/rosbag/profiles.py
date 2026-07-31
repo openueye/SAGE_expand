@@ -5,12 +5,12 @@ from types import MappingProxyType
 from typing import Mapping
 
 from ...prepared_scene_contract import (
-    PREPARED_SCENE_V2,
+    PREPARED_SCENE_SCHEMA,
     PROFILE_CONTRACTS,
-    validate_v2_source_contract,
+    validate_source_contract as validate_prepared_scene_contract,
 )
 
-SCHEMA_VERSION = PREPARED_SCENE_V2
+SCHEMA_VERSION = PREPARED_SCENE_SCHEMA
 
 
 @dataclass(frozen=True)
@@ -108,5 +108,5 @@ def profile_for_name(name: str) -> PreparationProfile:
 def validate_source_contract(payload: Mapping[str, object]) -> PreparationProfile:
     if not isinstance(payload, Mapping):
         raise ValueError("Prepared Scene source contract must be an object")
-    validate_v2_source_contract(payload)
+    validate_prepared_scene_contract(payload)
     return profile_for_name(str(payload["preparation_profile"]))

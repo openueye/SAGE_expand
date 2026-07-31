@@ -26,6 +26,7 @@ from .scene import (
     sha256_file,
     transform_contract_sha256,
 )
+from .receipt_contract import REPLAY_RECEIPT_SCHEMA
 from .source_policy import SOURCE_POLICY_VERSION, descriptor_for_type
 
 
@@ -78,8 +79,8 @@ class PreparedSceneFrameSource:
         source_mode = str(manifest.get("source", {}).get("mode", manifest.get("source_mode", "LIDAR_RAW")))
         profile = str(manifest.get("preparation_profile", "sage-prepared-scene-v1"))
         return {
-            "adapter": "prepared-scene-v2",
-            "receipt_schema": "prepared-scene-v2-replay-v1",
+            "adapter": "prepared-scene",
+            "receipt_schema": REPLAY_RECEIPT_SCHEMA,
             "preparation_profile": profile,
             "source_mode": source_mode,
             "source_policy_version": str(manifest["source_policy_version"]),
@@ -125,7 +126,7 @@ class PreparedSceneFrameSource:
         rejected_count = int(counts.get("rejected_centers", 0)) if isinstance(counts, dict) else 0
         self._prepared_receipt = {
             **self.start_identity(),
-            "receipt_schema": "prepared-scene-v2-replay-v1",
+            "receipt_schema": REPLAY_RECEIPT_SCHEMA,
             "complete": True,
             "aborted": False,
             "emitted_centers": self._emitted,
@@ -182,7 +183,7 @@ class PreparedSceneFrameSource:
         self._aborted = True
         return {
             **identity,
-            "receipt_schema": "prepared-scene-v2-replay-v1",
+            "receipt_schema": REPLAY_RECEIPT_SCHEMA,
             "complete": False,
             "aborted": True,
             "emitted_centers": self._emitted,
@@ -403,7 +404,7 @@ def frame_source_for_config(
     frame_limit: int = -1,
     non_formal: bool = False,
 ) -> FrameSource:
-    if config.input_adapter == "prepared-scene-v2":
+    if config.input_adapter == "prepared-scene":
         return PreparedSceneFrameSource(config, frame_limit=frame_limit)
     if config.input_adapter == "rosbag-fixed-lag-v1":
         return OdinBagFixedLagFrameSource(

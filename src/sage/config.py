@@ -30,7 +30,6 @@ ALL_ACCEPTED_FRAME_LIMIT = -1
 class SceneConfig:
     scene_dir: Path | None
     prepared_scene_dir: Path | None
-    raw_depth_dir: Path | None
     fused5_depth_dir: Path | None
     fused5_mask_dir: Path | None
     resize_width: int | None = None
@@ -39,7 +38,7 @@ class SceneConfig:
         "LIDAR_SLAM_CENTER", "LIDAR_SLAM_FUSED5",
     )
     center_depth_dir: Path | None = None
-    input_adapter: str = "prepared-scene-v2"
+    input_adapter: str = "prepared-scene"
     rosbag_dir: Path | None = None
     calibration_path: Path | None = None
     write_through_dir: Path | None = None
@@ -61,8 +60,8 @@ class SceneConfig:
                 "RAW semantics confirmations and require_clean_worktree "
                 "must be JSON booleans"
             )
-        if self.input_adapter not in {"prepared-scene-v2", "rosbag-fixed-lag-v1"}:
-            raise ValueError("input_adapter must be prepared-scene-v2 or rosbag-fixed-lag-v1")
+        if self.input_adapter not in {"prepared-scene", "rosbag-fixed-lag-v1"}:
+            raise ValueError("input_adapter must be prepared-scene or rosbag-fixed-lag-v1")
         if (self.resize_width is None) != (self.resize_height is None):
             raise ValueError("resize_width and resize_height must be configured together")
         if any(value is not None and value < 1 for value in (self.resize_width, self.resize_height)):
@@ -74,21 +73,21 @@ class SceneConfig:
         }:
             raise ValueError("enabled_depth_sources must select exactly one raw or SLAM LiDAR source family")
         object.__setattr__(self, "enabled_depth_sources", sources)
-        if self.input_adapter == "prepared-scene-v2":
+        if self.input_adapter == "prepared-scene":
             if self.scene_dir is None or self.prepared_scene_dir is None:
                 raise ValueError("Prepared Scene adapter requires scene_dir and prepared_scene_dir")
             if self.fused5_depth_dir is None or self.fused5_mask_dir is None:
                 raise ValueError("Prepared Scene adapter requires fused5 artifact roots")
-            if (self.raw_depth_dir is None) == (self.center_depth_dir is None):
-                raise ValueError("Prepared Scene must configure exactly one of raw_depth_dir or center_depth_dir")
+            if self.center_depth_dir is None:
+                raise ValueError("Prepared Scene adapter requires center_depth_dir")
             if sources[0].startswith("LIDAR_SLAM") and self.center_depth_dir is None:
                 raise ValueError("SLAM source profiles require source-neutral center_depth_dir")
         else:
             if self.rosbag_dir is None or self.calibration_path is None:
                 raise ValueError("Streaming adapter requires rosbag_dir and calibration")
             if any(value is not None for value in (
-                self.scene_dir, self.prepared_scene_dir, self.raw_depth_dir,
-                self.center_depth_dir, self.fused5_depth_dir, self.fused5_mask_dir,
+                self.scene_dir, self.prepared_scene_dir, self.center_depth_dir,
+                self.fused5_depth_dir, self.fused5_mask_dir,
             )):
                 raise ValueError("Streaming adapter cannot declare Prepared Scene artifact roots")
             if type(self.stream_queue_size) is not int or self.stream_queue_size < 1:
@@ -115,10 +114,9 @@ class SceneConfig:
 
     @property
     def center_depth_path(self) -> Path:
-        path = self.center_depth_dir if self.center_depth_dir is not None else self.raw_depth_dir
-        if path is None:
+        if self.center_depth_dir is None:
             raise ValueError("Streaming scene has no materialized center depth root")
-        return path
+        return self.center_depth_dir
 
 
 @dataclass(frozen=True)
@@ -441,9 +439,7 @@ class SageConfig:
         scene.pop("require_clean_worktree", None)
         if scene.get("center_depth_dir") is None:
             scene.pop("center_depth_dir", None)
-        else:
-            scene.pop("raw_depth_dir", None)
-        if self.scene.input_adapter == "prepared-scene-v2":
+        if self.scene.input_adapter == "prepared-scene":
             for name in (
                 "input_adapter", "rosbag_dir", "calibration_path", "write_through_dir",
                 "stream_queue_size", "preparation_profile", "source_mode", "fusion_policy",
@@ -453,7 +449,7 @@ class SageConfig:
                 scene.pop(name, None)
         else:
             scene["calibration"] = scene.pop("calibration_path")
-            for name in ("scene_dir", "prepared_scene_dir", "raw_depth_dir", "center_depth_dir", "fused5_depth_dir", "fused5_mask_dir"):
+            for name in ("scene_dir", "prepared_scene_dir", "center_depth_dir", "fused5_depth_dir", "fused5_mask_dir"):
                 if scene.get(name) is None:
                     scene.pop(name, None)
         return converted

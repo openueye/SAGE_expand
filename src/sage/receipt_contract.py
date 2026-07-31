@@ -7,7 +7,7 @@ import math
 from typing import Iterable
 
 
-REPLAY_RECEIPT_SCHEMA = "prepared-scene-v2-replay-v1"
+REPLAY_RECEIPT_SCHEMA = "prepared-scene-replay-v1"
 MATERIALIZED_RECEIPT_SCHEMA = "materialized-prepared-scene-v1"
 STREAM_RECEIPT_SCHEMA = "fixed-lag-stream-v1"
 
@@ -50,7 +50,7 @@ def validate_completion_receipt(
         raise ValueError(f"FrameSource completion receipt is missing fields: {', '.join(missing)}")
     schema = receipt["receipt_schema"]
     expected_schema = {
-        "prepared-scene-v2": REPLAY_RECEIPT_SCHEMA,
+        "prepared-scene": REPLAY_RECEIPT_SCHEMA,
         "rosbag-fixed-lag-v1": STREAM_RECEIPT_SCHEMA,
     }.get(expected_adapter)
     if schema not in set(allowed_schemas) or (

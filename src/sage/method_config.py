@@ -323,7 +323,6 @@ class SageMethodConfig:
         return SceneConfig(
             scene_dir=None,
             prepared_scene_dir=None,
-            raw_depth_dir=None,
             center_depth_dir=None,
             fused5_depth_dir=None,
             fused5_mask_dir=None,

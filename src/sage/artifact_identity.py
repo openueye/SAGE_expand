@@ -231,7 +231,7 @@ def normalize_dataset_identity(frame_source_identity: object) -> dict[str, objec
     if not isinstance(frame_source_identity, dict):
         raise ValueError("Frame source identity must be represented by an object")
     adapter = frame_source_identity.get("adapter")
-    if adapter == "prepared-scene-v2":
+    if adapter == "prepared-scene":
         return {
             name: frame_source_identity.get(name)
             for name in (
@@ -312,7 +312,7 @@ class RunInputIdentity:
         cls, config: SageConfig, *, dependencies: DependencyIdentity,
         require_clean: bool = False, frame_source: FrameSource | None = None,
     ) -> "RunInputIdentity":
-        scene = PreparedScene(config.scene) if config.scene.input_adapter == "prepared-scene-v2" else None
+        scene = PreparedScene(config.scene) if config.scene.input_adapter == "prepared-scene" else None
         owns_source = frame_source is None
         source_adapter = frame_source or frame_source_for_config(
             config.scene, frame_limit=ALL_ACCEPTED_FRAME_LIMIT,
@@ -322,7 +322,7 @@ class RunInputIdentity:
         finally:
             if owns_source:
                 source_adapter.abort("identity capture does not consume frames")
-        prepared = scene._validate_contract() if config.scene.input_adapter == "prepared-scene-v2" else None
+        prepared = scene._validate_contract() if config.scene.input_adapter == "prepared-scene" else None
         commit, dirty = _producer_code_identity()
         if require_clean and dirty:
             raise ValueError("SAGE producer worktree must be clean before mapping")
@@ -370,7 +370,7 @@ class RunInputIdentity:
                 raise ValueError("SAGE producer code identity changed")
             if _environment_lock_identity() != self.environment_locks:
                 raise ValueError("SAGE environment lock identity changed")
-            if config.scene.input_adapter == "prepared-scene-v2":
+            if config.scene.input_adapter == "prepared-scene":
                 scene = PreparedScene(config.scene)
                 manifest = scene._validate_contract()
                 current_manifest_hash = sha256_file(scene.prepared_manifest_path)

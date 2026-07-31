@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Mapping
 
 
-PREPARED_SCENE_V2 = "sage-prepared-scene-v1"
+PREPARED_SCENE_SCHEMA = "sage-prepared-scene-v1"
 
 _COMMON_CAMERA = {"source_model": "FishPoly", "output_model": "PINHOLE", "output_grid": [1296, 1600]}
 _COMMON_DEPTH = {
@@ -42,9 +42,9 @@ PROFILE_CONTRACTS = {
 }
 
 
-def validate_v2_source_contract(manifest: Mapping[str, object]) -> dict[str, object]:
-    if manifest.get("schema_version") != PREPARED_SCENE_V2:
-        raise ValueError(f"Prepared Scene must use {PREPARED_SCENE_V2}")
+def validate_source_contract(manifest: Mapping[str, object]) -> dict[str, object]:
+    if manifest.get("schema_version") != PREPARED_SCENE_SCHEMA:
+        raise ValueError(f"Prepared Scene must use {PREPARED_SCENE_SCHEMA}")
     profile_name = manifest.get("preparation_profile")
     if profile_name not in PROFILE_CONTRACTS:
         raise ValueError("Prepared Scene preparation_profile is unsupported")
