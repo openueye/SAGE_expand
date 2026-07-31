@@ -31,6 +31,7 @@ class TrainableGaussians(nn.Module):
         source_confidences: torch.Tensor,
     ) -> None:
         super().__init__()
+        log_scales = self._normalize_log_scales(log_scales)
         self.means3d = nn.Parameter(means3d)
         self.colors = nn.Parameter(colors)
         self.opacity_logits = nn.Parameter(opacity_logits)
@@ -52,8 +53,7 @@ class TrainableGaussians(nn.Module):
 
     @property
     def scales(self) -> torch.Tensor:
-        scales = torch.exp(self.log_scales)
-        return scales.repeat(1, 3) if scales.shape[1] == 1 else scales
+        return torch.exp(self.log_scales)
 
     @classmethod
     def from_frame(
@@ -73,7 +73,13 @@ class TrainableGaussians(nn.Module):
         source_types = torch.as_tensor(frame.mapping.source_types[rows, columns], dtype=torch.uint8)
         source_confidences = torch.as_tensor(frame.mapping.confidences[rows, columns], dtype=torch.float32)
         focal = (frame.intrinsics.fx + frame.intrinsics.fy) * 0.5
-        log_scales = torch.log((z / focal).clamp_min(1e-4)).unsqueeze(1).repeat(1, 3)
+        base_scales = (z / focal).clamp_min(gaussian_initialization.scale_clamp_min)
+        anisotropy = torch.as_tensor(
+            gaussian_initialization.initial_scale_anisotropy,
+            dtype=base_scales.dtype,
+            device=base_scales.device,
+        )
+        log_scales = torch.log((base_scales.unsqueeze(1) * anisotropy).clamp_min(gaussian_initialization.scale_clamp_min))
         count = points.shape[0]
         target = torch.device(device)
         opacity_logit = gaussian_initialization.opacity_logit
@@ -261,7 +267,13 @@ class TrainableGaussians(nn.Module):
         if any(tensor.device != self.means3d.device for tensor in tensors):
             raise ValueError("Append tensors must be on the model device")
         count = batch.means3d.shape[0]
-        if batch.means3d.ndim != 2 or batch.means3d.shape[1] != 3 or batch.colors.shape != (count, 3) or batch.opacity_logits.shape != (count, 1) or batch.log_scales.ndim != 2 or batch.log_scales.shape[0] != count or batch.rotations.shape != (count, 4) or batch.source_types.shape != (count,) or batch.source_confidences.shape != (count,):
+        if (
+            batch.means3d.ndim != 2 or batch.means3d.shape[1] != 3
+            or batch.colors.shape != (count, 3) or batch.opacity_logits.shape != (count, 1)
+            or batch.log_scales.ndim != 2 or batch.log_scales.shape[0] != count
+            or batch.log_scales.shape[1] != 3 or batch.rotations.shape != (count, 4)
+            or batch.source_types.shape != (count,) or batch.source_confidences.shape != (count,)
+        ):
             raise ValueError("Append tensors have incompatible row shapes")
         if batch.source_types.dtype != torch.uint8 or batch.source_confidences.dtype != torch.float32:
             raise ValueError("Append provenance tensors have invalid dtypes")
@@ -299,6 +311,8 @@ class TrainableGaussians(nn.Module):
             raise ValueError("Gaussian source_types mix raw and SLAM LiDAR source families")
         if not bool(torch.isfinite(self.source_confidences).all()) or bool(((self.source_confidences < 0) | (self.source_confidences > 1)).any()):
             raise ValueError("Gaussian source_confidences must be finite and within [0, 1]")
+        if self.log_scales.ndim != 2 or self.log_scales.shape[1] != 3:
+            raise ValueError("Gaussian log_scales must be Nx3")
         if not all(bool(torch.isfinite(parameter).all()) for parameter in self.parameters()):
             raise ValueError("Gaussian parameters must be finite")
 
@@ -307,3 +321,14 @@ class TrainableGaussians(nn.Module):
         raw = torch.isin(source_types, torch.tensor([0, 1], dtype=torch.uint8, device=source_types.device)).any()
         slam = torch.isin(source_types, torch.tensor([3, 4], dtype=torch.uint8, device=source_types.device)).any()
         return bool(raw and slam)
+
+    @staticmethod
+    def _normalize_log_scales(log_scales: torch.Tensor) -> torch.Tensor:
+        if log_scales.ndim != 2:
+            raise ValueError("log_scales must be 2-D")
+        columns = log_scales.shape[1]
+        if columns == 1:
+            return log_scales.repeat(1, 3)
+        if columns != 3:
+            raise ValueError("log_scales must have either 1 or 3 columns")
+        return log_scales

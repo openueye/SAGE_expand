@@ -28,6 +28,8 @@ mapping:
     log_scales: 0.001
     rotations: 0.001
   initial_opacity: 0.5
+  scale_clamp_min: 1e-4
+  initial_scale_anisotropy: [0.95, 1.05, 1.20]
   growth:
     coverage_alpha_threshold: 0.99
     rgb_residual_threshold: 0.15

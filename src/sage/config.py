@@ -162,6 +162,8 @@ class SPNetOnlineConfig:
 @dataclass(frozen=True)
 class GaussianInitializationConfig:
     opacity: float
+    scale_clamp_min: float = 1e-4
+    initial_scale_anisotropy: tuple[float, float, float] = (0.95, 1.05, 1.20)
 
     def __post_init__(self) -> None:
         try:
@@ -170,7 +172,21 @@ class GaussianInitializationConfig:
             raise ValueError("gaussian_initialization.opacity must be numeric") from exc
         if not math.isfinite(opacity) or not 0 < opacity < 1:
             raise ValueError("gaussian_initialization.opacity must be finite and within (0, 1)")
+        try:
+            scale_clamp_min = float(self.scale_clamp_min)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("gaussian_initialization.scale_clamp_min must be numeric") from exc
+        if not math.isfinite(scale_clamp_min) or scale_clamp_min <= 0:
+            raise ValueError("gaussian_initialization.scale_clamp_min must be finite and positive")
+        try:
+            anisotropy = tuple(float(value) for value in self.initial_scale_anisotropy)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("gaussian_initialization.initial_scale_anisotropy must be three positive floats") from exc
+        if len(anisotropy) != 3 or any(not math.isfinite(value) or value <= 0 for value in anisotropy):
+            raise ValueError("gaussian_initialization.initial_scale_anisotropy must be three positive finite values")
         object.__setattr__(self, "opacity", opacity)
+        object.__setattr__(self, "scale_clamp_min", scale_clamp_min)
+        object.__setattr__(self, "initial_scale_anisotropy", anisotropy)
 
     @property
     def opacity_logit(self) -> float:

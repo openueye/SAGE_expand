@@ -27,7 +27,7 @@ def _empty_batch(device: torch.device) -> GaussianAppendBatch:
         torch.empty((0, 3), dtype=torch.float32, device=device),
         torch.empty((0, 3), dtype=torch.float32, device=device),
         torch.empty((0, 1), dtype=torch.float32, device=device),
-        torch.empty((0, 1), dtype=torch.float32, device=device),
+        torch.empty((0, 3), dtype=torch.float32, device=device),
         torch.empty((0, 4), dtype=torch.float32, device=device),
         torch.empty((0,), dtype=torch.uint8, device=device),
         torch.empty((0,), dtype=torch.float32, device=device),
@@ -54,6 +54,12 @@ class GrowthBuilder:
         self.config = config
         self.device = torch.device(device)
         self.opacity_logit = gaussian_initialization.opacity_logit
+        self.scale_clamp_min = gaussian_initialization.scale_clamp_min
+        self.scale_anisotropy = torch.as_tensor(
+            gaussian_initialization.initial_scale_anisotropy,
+            dtype=torch.float32,
+            device=self.device,
+        )
 
     def build(
         self,
@@ -141,9 +147,10 @@ class GrowthBuilder:
         rgb = torch.as_tensor(frame.rgb, dtype=torch.float32, device=self.device)
         colors = rgb[pixels[:, 0], pixels[:, 1]]
         focal = (frame.intrinsics.fx + frame.intrinsics.fy) * 0.5
+        base_scales = (camera_depths / focal).clamp_min(self.scale_clamp_min)
         batch = GaussianAppendBatch(
             points, colors, torch.full((points.shape[0], 1), self.opacity_logit, dtype=torch.float32, device=self.device),
-            torch.log((camera_depths / focal).clamp_min(1e-4)).unsqueeze(1).repeat(1, 3),
+            torch.log((base_scales.unsqueeze(1) * self.scale_anisotropy).clamp_min(self.scale_clamp_min)),
             torch.tensor([[1.0, 0.0, 0.0, 0.0]], dtype=torch.float32, device=self.device).repeat(points.shape[0], 1),
             source_types, confidences,
         )
