@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import random
+from time import perf_counter
 
 import numpy as np
 import torch
@@ -39,16 +40,30 @@ DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs" / "sage.ya
 _MAPPING_PROGRESS_EVERY = 50
 
 
-def _report_frames(frames, *, expected_total: int):
-    total = str(expected_total) if expected_total > 0 else "?"
+def _format_elapsed(elapsed: float) -> str:
+    ms = int(elapsed * 1000)
+    h, rem = divmod(ms, 3_600_000)
+    m, rem = divmod(rem, 60_000)
+    s, ms = divmod(rem, 1000)
+    return f"{h:02d}:{m:02d}:{s:02d}.{ms:03d}"
+
+
+def _report_frames(
+    frames,
+    *,
+    expected_total: int,
+    mapping_started_at: float,
+):
     for completed, frame in enumerate(frames, start=1):
         if (
             completed == 1
             or completed % _MAPPING_PROGRESS_EVERY == 0
             or (expected_total > 0 and completed == expected_total)
         ):
+            elapsed = perf_counter() - mapping_started_at
             print(
-                f"SAGE mapping frame {frame.index + 1}/{total}: {frame.stem}",
+                f"[{_format_elapsed(elapsed)}] SAGE mapping frame "
+                f"{completed}；frame index {frame.index:06d}",
                 flush=True,
             )
         yield frame
@@ -146,6 +161,7 @@ def train(
         require_clean=require_clean,
         frame_source=source,
     )
+    mapping_started_at = perf_counter()
     source.start_identity()
     torch.cuda.synchronize(device)
     torch.cuda.reset_peak_memory_stats(device)
@@ -155,7 +171,13 @@ def train(
             spnet_provider=spnet_provider, metric_evaluator=metric_evaluator,
             gaussian_initialization=config.gaussian_initialization, loss_policy=config.loss,
             seed=config.seed,
-        ).run(_report_frames(source.frames(), expected_total=ALL_ACCEPTED_FRAME_LIMIT))
+        ).run(
+            _report_frames(
+                source.frames(),
+                expected_total=ALL_ACCEPTED_FRAME_LIMIT,
+                mapping_started_at=mapping_started_at,
+            )
+        )
         torch.cuda.synchronize(device)
         if result.spnet_actual_invocations != result.spnet_expected_invocations:
             raise RuntimeError("SPNet invocation count changed during SAGE training")

@@ -127,11 +127,11 @@ class MappingRun:
     processed_frames: int
     duration_seconds: float
     fps: float
+    spnet_identity: object | None = None
     peak_cuda_memory_bytes: int | None = None
     spnet_expected_invocations: int = 0
     spnet_actual_invocations: int = 0
     spnet_inference_seconds: tuple[float, ...] = ()
-    spnet_identity: object
     optimization_variant: str = ODIN_GLOBAL_CURRENT_ANCHORED_VARIANT
     optimizer_lifecycle: str = "persistent"
     optimizer_final_step: int | None = None
