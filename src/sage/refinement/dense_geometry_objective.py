@@ -165,48 +165,41 @@ def _stencil_minimum(values: torch.Tensor) -> torch.Tensor:
     return output
 
 
+def _edge_gradients(
+    target_rgb: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    gray = target_rgb.detach().mean(dim=2)
+    horizontal_gradient = (gray[:, 1:] - gray[:, :-1]).abs()
+    vertical_gradient = (gray[1:, :] - gray[:-1, :]).abs()
+    center_gradient = torch.maximum(
+        torch.maximum(
+            F.pad(horizontal_gradient, (1, 0)),
+            F.pad(horizontal_gradient, (0, 1)),
+        ),
+        torch.maximum(
+            F.pad(vertical_gradient, (0, 0, 1, 0)),
+            F.pad(vertical_gradient, (0, 0, 0, 1)),
+        ),
+    )
+    return center_gradient, horizontal_gradient, vertical_gradient
+
+
 def edge_weights(
     target_rgb: torch.Tensor,
     gamma: float,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Return detached center, horizontal and vertical edge attenuations."""
-    gray = target_rgb.detach().mean(dim=2)
-    horizontal_gradient = (gray[:, 1:] - gray[:, :-1]).abs()
-    vertical_gradient = (gray[1:, :] - gray[:-1, :]).abs()
-    horizontal_weight = torch.exp(-gamma * horizontal_gradient)
-    vertical_weight = torch.exp(-gamma * vertical_gradient)
-    center_gradient = torch.maximum(
-        torch.maximum(
-            F.pad(horizontal_gradient, (1, 0)),
-            F.pad(horizontal_gradient, (0, 1)),
-        ),
-        torch.maximum(
-            F.pad(vertical_gradient, (0, 0, 1, 0)),
-            F.pad(vertical_gradient, (0, 0, 0, 1)),
-        ),
-    )
+    center, horizontal, vertical = _edge_gradients(target_rgb)
     return (
-        torch.exp(-gamma * center_gradient),
-        horizontal_weight,
-        vertical_weight,
+        torch.exp(-gamma * center),
+        torch.exp(-gamma * horizontal),
+        torch.exp(-gamma * vertical),
     )
 
 
 def _center_edge_weights(target_rgb: torch.Tensor, gamma: float) -> torch.Tensor:
     """Compute only the center attenuation consumed by normal refinement."""
-    gray = target_rgb.detach().mean(dim=2)
-    horizontal_gradient = (gray[:, 1:] - gray[:, :-1]).abs()
-    vertical_gradient = (gray[1:, :] - gray[:-1, :]).abs()
-    center_gradient = torch.maximum(
-        torch.maximum(
-            F.pad(horizontal_gradient, (1, 0)),
-            F.pad(horizontal_gradient, (0, 1)),
-        ),
-        torch.maximum(
-            F.pad(vertical_gradient, (0, 0, 1, 0)),
-            F.pad(vertical_gradient, (0, 0, 0, 1)),
-        ),
-    )
+    center_gradient, _, _ = _edge_gradients(target_rgb)
     return torch.exp(-gamma * center_gradient)
 
 
