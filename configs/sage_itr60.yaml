@@ -18,9 +18,9 @@ spnet:
 mapping:
   map_every: 5
   keyframe_every: 5
-  iterations: 90
+  iterations: 60
   prune_every: 30
-  prune_stop_after: 90
+  prune_stop_after: 60
   learning_rates:
     means3d: 0.00016
     colors: 0.0025

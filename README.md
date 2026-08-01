@@ -15,11 +15,15 @@ git clone https://github.com/openueye/SAGE.git
 cd SAGE
 conda-lock install --name sage conda-lock.yml
 conda run -n sage python tools/install_locked_pip.py --environment sage
-conda run -n sage python tools/build_renderer.py
 ```
 
-The bundled renderer targets CUDA capability 8.9. Set
-`RENDERER_CUDA_ARCH_LIST` and rebuild it for another GPU architecture.
+SAGE uses the pinned `gsplat` package. Its CUDA extension is compiled and cached
+on the first renderer invocation, so the first preflight or training run takes
+longer and requires the locked CUDA compiler toolchain. By default PyTorch
+targets the CUDA architectures of the GPUs visible during that first invocation;
+set `TORCH_CUDA_ARCH_LIST` before it if a fixed target architecture is required.
+The run receipt records both the active GPU compute capability and the raw
+`TORCH_CUDA_ARCH_LIST` value (`null` when it is unset).
 
 ## Models
 
@@ -64,12 +68,18 @@ Training runs mapping, appearance refinement, and final evaluation in order:
 
 ```text
 outputs/sage/
-├── structure/{checkpoint.pt, map.ply, run_manifest.json}
+├── structure/{checkpoint.pt, map.ply, spnet_dense.pt, run_manifest.json}
 ├── structure.execution.json
 ├── final/{appearance_checkpoint.pt, appearance_map.ply, run_manifest.json}
 ├── evaluation/{evaluation.json, run_manifest.json}
 └── run_manifest.json
 ```
+
+`structure/spnet_dense.pt` is an identity- and manifest-hash-bound cache of
+dense SPNet predictions already computed during mapping. Appearance refinement
+reuses those predictions and runs SPNet online only for mapping frames absent
+from the cache (normally the bootstrap frame). Older valid structure outputs
+without this optional cache remain resumable and fall back to online inference.
 
 Use `sage evaluate --checkpoint outputs/sage/final/appearance_checkpoint.pt`
 with the same input choice to publish a separate evaluation output. Existing

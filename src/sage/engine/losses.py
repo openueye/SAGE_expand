@@ -65,17 +65,6 @@ def alpha_normalized_depth(
     return torch.where(valid, normalized, torch.zeros_like(normalized))
 
 
-def alpha_normalize_render_output_depth(output: object, *, min_alpha: float) -> object:
-    """Compatibility adapter kept here so normalization remains off the renderer seam."""
-    from .rendering import RenderOutput
-
-    if not isinstance(output, RenderOutput):
-        raise ValueError("alpha normalization requires a RenderOutput")
-    valid = torch.isfinite(output.accumulated_depth) & torch.isfinite(output.alpha) & (output.alpha >= min_alpha)
-    normalized = alpha_normalized_depth(output.accumulated_depth, output.alpha)
-    return RenderOutput(output.rgb, torch.where(valid, normalized, torch.zeros_like(normalized)), output.alpha)
-
-
 def _source_masks(target_mapping: MappingObservation, device: torch.device) -> dict[str, torch.Tensor]:
     source_types = torch.as_tensor(target_mapping.source_types, dtype=torch.uint8, device=device)
     return {
@@ -273,3 +262,31 @@ def mapping_loss(
         "alpha_fused5_p10": fused5_alpha[1],
         "alpha_fused5_p50": fused5_alpha[2],
     }
+
+
+def mapping_training_loss(
+    rendered_rgb: torch.Tensor,
+    target_rgb: torch.Tensor,
+    rendered_depth: torch.Tensor,
+    target_mapping: MappingObservation,
+    *,
+    rendered_alpha: torch.Tensor,
+    policy: MappingLossConfig,
+    target_depth: torch.Tensor | None = None,
+    source_masks: dict[str, torch.Tensor] | None = None,
+    validate_rgb: bool = True,
+) -> torch.Tensor:
+    """Return only the differentiable mapping objective used by optimizer steps."""
+    total, _ = mapping_loss(
+        rendered_rgb,
+        target_rgb,
+        rendered_depth,
+        target_mapping,
+        rendered_alpha=rendered_alpha,
+        policy=policy,
+        target_depth=target_depth,
+        source_masks=source_masks,
+        include_diagnostics=False,
+        validate_rgb=validate_rgb,
+    )
+    return total

@@ -10,11 +10,10 @@ import json
 
 _DEPENDENCY_FIELDS = {
     "renderer": {
-        "unavailable": {"kind", "purpose"},
-        "repository-cuda": {
-            "kind", "source_tree_sha256", "provenance_commit", "extension_sha256",
-            "adapter_schema", "python_soabi", "torch_version", "cuda_version", "nvcc_version",
-            "compiler", "abi", "compute_capability", "compile_flags",
+        "pip-package": {
+            "kind", "package", "package_version", "extension_sha256",
+            "adapter_schema", "python_soabi", "torch_version", "cuda_version",
+            "compute_capability", "torch_cuda_arch_list",
         },
     },
     "spnet": {

@@ -13,6 +13,7 @@ import tempfile
 import numpy as np
 import torch
 
+from ..data.providers.spnet_cache import write_dense_spnet_cache
 from ..data.scene import sha256_file
 from ..engine.ply_export import write_gaussian_ply
 from ..foundation.artifact_versions import CHECKPOINT_VERSION
@@ -25,7 +26,6 @@ from .run_identity import RunInputIdentity
 
 RUN_MANIFEST_SCHEMA_VERSION = "sage-run-manifest-v1"
 
-_MAPPING_COMMIT_FIELDS = set(MappingCommit.__dataclass_fields__)
 _DIAGNOSTIC_FIELDS = {
     "loss": {"photo", "geo_center", "geo_fused5", "hit_center", "hit_fused5", "total"},
     "depth": {"valid_pixels", "valid_center_pixels", "valid_fused5_pixels", "center_mae", "fused5_mae"},
@@ -87,8 +87,11 @@ def _checkpoint_payload(
 
 
 def _validate_run(run: MappingRun) -> None:
+    if len(run.dense_spnet_frames) not in {0, run.spnet_actual_invocations}:
+        raise ValueError("Dense SPNet cache count must match mapping invocations")
     previous = None
     for commit in run.commits:
+        _validate_commit_diagnostics(asdict(commit))
         if sum(commit.added_by_source.values()) != commit.added or sum(commit.pruned_by_source.values()) != commit.pruned:
             raise ValueError("Run commit source totals do not match scalar totals")
         if sum(commit.remaining_by_source.values()) != commit.gaussian_count:
@@ -155,8 +158,25 @@ def write_run_artifacts(
         checkpoint = staging / "checkpoint.pt"
         ply = staging / "map.ply"
         manifest = staging / "run_manifest.json"
+        dense_spnet_cache = staging / "spnet_dense.pt"
         torch.save(_checkpoint_payload(run, input_identity, receipt), checkpoint)
+        if run.dense_spnet_frames:
+            write_dense_spnet_cache(
+                dense_spnet_cache,
+                run.dense_spnet_frames,
+                run.spnet_identity,
+            )
         write_gaussian_ply(ply, run.model)
+        artifact_payload = {
+            "checkpoint": {"path": checkpoint.name, "sha256": sha256_file(checkpoint)},
+            "map_ply": {"path": ply.name, "sha256": sha256_file(ply)},
+        }
+        if dense_spnet_cache.is_file():
+            artifact_payload["dense_spnet_cache"] = {
+                "path": dense_spnet_cache.name,
+                "sha256": sha256_file(dense_spnet_cache),
+                "frame_count": len(run.dense_spnet_frames),
+            }
         payload = {
             "schema_version": RUN_MANIFEST_SCHEMA_VERSION,
             "producer_code": input_identity.producer_code_payload(),
@@ -195,16 +215,14 @@ def write_run_artifacts(
                 "adapter": _execution_adapter_payload(run.spnet_identity),
                 "inference_seconds": list(run.spnet_inference_seconds),
                 "peak_cuda_memory_bytes": run.peak_cuda_memory_bytes,
+                "dense_cache_frames": len(run.dense_spnet_frames),
             },
             "environment": {
                 "python": sys.version.split()[0], "torch": torch.__version__,
                 "torch_cuda": torch.version.cuda, "device": str(run.model.means3d.device),
                 "locks": dict(input_identity.environment_locks),
             },
-            "artifacts": {
-                "checkpoint": {"path": checkpoint.name, "sha256": sha256_file(checkpoint)},
-                "map_ply": {"path": ply.name, "sha256": sha256_file(ply)},
-            },
+            "artifacts": artifact_payload,
         }
         manifest.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
         input_identity.validate_unchanged(config)

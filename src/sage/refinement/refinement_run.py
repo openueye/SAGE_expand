@@ -15,20 +15,21 @@ import torch
 from ..artifacts import load_checkpoint
 from ..data.frame_source import frame_source_for_config
 from ..data.providers.spnet import OnlineSPNetProvider
-from ..engine.evaluation import (
-    EvaluationDepthPolicy,
-    aggregate_evaluation_frame_reports,
-    evaluate_frames,
+from ..data.providers.spnet_cache import (
+    DenseSPNetCache,
+    ReusingDenseSPNetProvider,
+    load_dense_spnet_cache,
 )
 from ..engine.losses import mapping_loss, photometric_loss
+from ..engine.geometry import is_mapping_frame
 from ..engine.metrics import ImageMetricEvaluator
 from ..engine.model import TrainableGaussians
 from ..engine.ply_export import write_gaussian_ply
 from ..engine.rendering import (
+    CachedRenderer,
     RenderOutput,
     capture_renderer_identity,
     prepare_render_static,
-    render,
 )
 from ..foundation.artifact_versions import (
     APPEARANCE_REFINEMENT_CHECKPOINT_VERSION,
@@ -54,9 +55,10 @@ from .appearance_refinement import (
 )
 from .dense_geometry_config import DenseGeometryPolicy
 from .dense_geometry_objective import (
-    dense_geometry_objective,
+    DenseNormalStatic,
+    dense_normal_objective,
     dense_prior_support_counts,
-    prepare_dense_geometry_static,
+    prepare_dense_normal_static,
 )
 from .dense_geometry_prior import prepare_dense_priors
 
@@ -64,10 +66,7 @@ from .dense_geometry_prior import prepare_dense_priors
 APPEARANCE_RUN_SCHEMA = "sage-refinement-run-v1"
 _DENSE_PRIOR_PROGRESS_EVERY = 25
 _REFINEMENT_PROGRESS_EVERY = 500
-_GEOMETRY_AND_TOPOLOGY_TENSORS = (
-    "means3d",
-    "log_scales",
-    "rotations",
+_TOPOLOGY_TENSORS = (
     "gaussian_ids",
     "created_at",
     "source_types",
@@ -99,11 +98,6 @@ def _report_count_progress(
         f"ETA {_format_duration(remaining)}",
         flush=True,
     )
-
-
-def is_mapping_frame(frame_index: int, *, map_every: int) -> bool:
-    """Return whether a source frame belongs to the frozen mapping cohort."""
-    return frame_index == 0 or (frame_index + 1) % map_every == 0
 
 
 def preflight_appearance_runtime(
@@ -171,11 +165,11 @@ def _appearance_objective_from_render(
     frame: FrameInputs,
     refinement: AppearanceRefinementConfig,
     loss_policy: MappingLossConfig,
-    dense_prior: DenseGeometryPrior | None = None,
     *,
+    dense_policy: DenseGeometryPolicy,
     photometric_rgb: torch.Tensor | None = None,
-    cached: dict[str, object] | None = None,
-) -> torch.Tensor | AppearanceObjective:
+    cached: dict[str, object],
+) -> AppearanceObjective:
     optimized_rgb = (
         output.rgb if photometric_rgb is None else photometric_rgb
     )
@@ -183,15 +177,7 @@ def _appearance_objective_from_render(
         raise ValueError(
             "Photometric RGB must match the native render shape"
         )
-    target = (
-        cached["target_rgb"]
-        if cached is not None
-        else torch.as_tensor(
-            frame.rgb,
-            dtype=optimized_rgb.dtype,
-            device=optimized_rgb.device,
-        )
-    )
+    target = cached["target_rgb"]
     if not isinstance(target, torch.Tensor):
         raise ValueError("Cached appearance RGB target is invalid")
     photo, _, _ = photometric_loss(
@@ -206,16 +192,8 @@ def _appearance_objective_from_render(
         frame.mapping,
         rendered_alpha=output.alpha,
         policy=loss_policy,
-        target_depth=(
-            cached.get("target_depth")
-            if cached is not None
-            else None
-        ),
-        source_masks=(
-            cached.get("source_masks")
-            if cached is not None
-            else None
-        ),
+        target_depth=cached.get("target_depth"),
+        source_masks=cached.get("source_masks"),
         include_image=False,
         include_diagnostics=False,
         validate_rgb=False,
@@ -226,40 +204,22 @@ def _appearance_objective_from_render(
         "lidar_depth": lidar_depth,
     }
     total = photo + refinement.lidar_depth_weight * lidar_depth
-    if dense_prior is None:
-        raise ValueError(
-            "SAGE objective requires an aligned dense prior"
-        )
-    dense_policy = DenseGeometryPolicy(
-        dense_depth_weight=0.0,
-        dense_normal_weight=1.0,
-        normal_smoothness_weight=0.0,
-        edge_weight_gamma=refinement.dense_normal_edge_weight_gamma,
-        alpha_support_a0=refinement.dense_normal_alpha_support_a0,
-        max_relative_depth_jump=(
-            refinement.dense_normal_max_relative_depth_jump
-        ),
-    )
-    _, dense_terms = dense_geometry_objective(
+    dense_static = cached.get("dense_normal_static")
+    if not isinstance(dense_static, DenseNormalStatic):
+        raise ValueError("Cached dense-normal target is invalid")
+    dense_result = dense_normal_objective(
         output.accumulated_depth,
         output.alpha,
-        dense_prior,
-        target,
         frame.intrinsics,
-        refinement.dense_prior,
         dense_policy,
-        static=(
-            cached.get("dense_static")
-            if cached is not None
-            else None
-        ),
+        dense_static,
     )
-    dense_normal = dense_terms["normal"]
+    dense_normal = dense_result.loss
     terms["dense_normal"] = dense_normal
     total = total + refinement.dense_normal_weight * dense_normal
     diagnostics = {
-        "dense_valid_normal_pixels": dense_terms["valid_normal_pixels"],
-        "dense_normal_weight_mass": dense_terms["normal_weight_mass"],
+        "dense_valid_normal_pixels": dense_result.valid_pixels,
+        "dense_normal_weight_mass": dense_result.weight_mass,
     }
     return AppearanceObjective(
         total=total,
@@ -275,6 +235,7 @@ def _dense_prior_record(
     provider_identity: dict[str, object],
     alignment_variant: str | None = None,
     max_relative_depth_jump: float | None = None,
+    prediction_cache: dict[str, object] | None = None,
 ) -> dict[str, object]:
     frame_indices = [frame.index for frame in frames]
     if set(priors) != set(frame_indices):
@@ -326,10 +287,13 @@ def _dense_prior_record(
                 "max_relative_depth_jump": max_relative_depth_jump,
             })
         records.append(record)
-    return {
+    payload = {
         "provider_identity": deepcopy(provider_identity),
         "frames": records,
     }
+    if prediction_cache is not None:
+        payload["prediction_cache"] = deepcopy(prediction_cache)
+    return payload
 
 
 def _valid_sha256(value: object) -> bool:
@@ -338,130 +302,6 @@ def _valid_sha256(value: object) -> bool:
         and len(value) == 64
         and all(character in "0123456789abcdef" for character in value)
     )
-
-
-def evaluation_cohorts(
-    report: dict[str, object],
-    *,
-    map_every: int,
-    policy: EvaluationDepthPolicy,
-) -> dict[str, dict[str, object]]:
-    """Split one all-frame render report into disjoint mapping/held-out cohorts."""
-    frames = report.get("frames")
-    if not isinstance(frames, list):
-        raise ValueError("Appearance evaluation report lacks frame records")
-    mapping = [
-        frame
-        for frame in frames
-        if is_mapping_frame(int(frame["index"]), map_every=map_every)
-    ]
-    held_out = [
-        frame
-        for frame in frames
-        if not is_mapping_frame(int(frame["index"]), map_every=map_every)
-    ]
-    if not mapping or not held_out:
-        raise ValueError(
-            "Appearance evaluation requires non-empty mapping and held-out cohorts"
-        )
-    return {
-        "all": report,
-        "mapping": aggregate_evaluation_frame_reports(
-            mapping,
-            policy=policy,
-        ),
-        "held_out": aggregate_evaluation_frame_reports(
-            held_out,
-            policy=policy,
-        ),
-    }
-
-
-def _metric_values(frame: dict[str, object]) -> dict[str, float]:
-    image = frame["image"]
-    geometry = frame["geometry"]
-    return {
-        "psnr": float(image["psnr"]),
-        "ssim": float(image["ssim"]),
-        "lpips": float(image["lpips"]),
-        "depth_mae_m": float(geometry["depth"]["total"]["mae_m"]),
-    }
-
-
-def compare_evaluation_cohorts(
-    baseline: dict[str, dict[str, object]],
-    candidate: dict[str, dict[str, object]],
-) -> dict[str, object]:
-    """Report continuous deltas and per-frame directions without a gate."""
-    comparison: dict[str, object] = {}
-    for cohort in ("all", "mapping", "held_out"):
-        baseline_report = baseline[cohort]
-        candidate_report = candidate[cohort]
-        baseline_frames = {
-            int(frame["index"]): frame
-            for frame in baseline_report["frames"]
-        }
-        candidate_frames = {
-            int(frame["index"]): frame
-            for frame in candidate_report["frames"]
-        }
-        if set(baseline_frames) != set(candidate_frames):
-            raise ValueError(
-                f"Appearance {cohort} evaluation frame sets do not match"
-            )
-        directions = {
-            "psnr": 1,
-            "ssim": 1,
-            "lpips": -1,
-            "depth_mae_m": -1,
-        }
-        per_metric = {}
-        for name, direction in directions.items():
-            wins = ties = losses = 0
-            for index in baseline_frames:
-                before = _metric_values(baseline_frames[index])[name]
-                after = _metric_values(candidate_frames[index])[name]
-                signed = direction * (after - before)
-                if signed > 0:
-                    wins += 1
-                elif signed < 0:
-                    losses += 1
-                else:
-                    ties += 1
-            per_metric[name] = {
-                "wins": wins,
-                "ties": ties,
-                "losses": losses,
-            }
-        baseline_aggregate = baseline_report["aggregate"]
-        candidate_aggregate = candidate_report["aggregate"]
-        comparison[cohort] = {
-            "frame_count": len(baseline_frames),
-            "aggregate_delta": {
-                "psnr": (
-                    candidate_aggregate["image"]["psnr"]
-                    - baseline_aggregate["image"]["psnr"]
-                ),
-                "ssim": (
-                    candidate_aggregate["image"]["ssim"]
-                    - baseline_aggregate["image"]["ssim"]
-                ),
-                "lpips": (
-                    candidate_aggregate["image"]["lpips"]
-                    - baseline_aggregate["image"]["lpips"]
-                ),
-                "depth_mae_m": (
-                    candidate_aggregate["depth"]["total"]["mae_m"]
-                    - baseline_aggregate["depth"]["total"]["mae_m"]
-                ),
-                "alpha_mean": (
-                    candidate_aggregate["alpha"]["total"]["mean"]
-                    - baseline_aggregate["alpha"]["total"]["mean"]
-                ),
-            },
-            "per_frame": per_metric,
-        }
-    return comparison
 
 
 def appearance_checkpoint_payload(
@@ -528,45 +368,6 @@ def appearance_checkpoint_payload(
     return payload
 
 
-def appearance_milestone_state_payload(
-    model: TrainableGaussians,
-    optimizer_state: dict[str, object],
-    *,
-    config: AppearanceRefinementConfig,
-    optimizer_step: int,
-    source_checkpoint_sha256: str,
-    refinement_config_sha256: str,
-    producer_code: dict[str, object],
-) -> dict[str, object]:
-    """Build a diagnostic milestone explicitly unsuitable for resumption."""
-    if (
-        type(optimizer_step) is not int
-        or optimizer_step < 1
-        or not _valid_sha256(source_checkpoint_sha256)
-        or not _valid_sha256(refinement_config_sha256)
-    ):
-        raise ValueError("Appearance milestone identity is invalid")
-    return {
-        "schema_version": "sage-appearance-milestone-state-v1",
-        "status": "incomplete",
-        "resumable": False,
-        "optimizer_step": optimizer_step,
-        "source_checkpoint_sha256": source_checkpoint_sha256,
-        "refinement_config_sha256": refinement_config_sha256,
-        "producer_code": deepcopy(producer_code),
-        "model_tensors": {
-            name: getattr(model, name).detach().cpu()
-            for name in model.PARAMETER_NAMES + (
-                "gaussian_ids",
-                "created_at",
-                "source_types",
-                "source_confidences",
-            )
-        },
-        "optimizer_state": deepcopy(optimizer_state),
-    }
-
-
 def _consume_mapping_frames(
     config: SageConfig,
     checkpoint_identity: dict[str, object],
@@ -606,44 +407,50 @@ def _consume_mapping_frames(
         raise
 
 
-def _evaluate_all_frames(
-    config: SageConfig,
-    model: TrainableGaussians,
-    checkpoint_identity: dict[str, object],
+def _load_mapping_dense_cache(
+    source_checkpoint: Path,
     *,
-    evaluator: ImageMetricEvaluator,
-    policy: EvaluationDepthPolicy,
-) -> tuple[dict[str, object], dict[str, object]]:
-    source = frame_source_for_config(
-        config.scene,
-        frame_limit=ALL_ACCEPTED_FRAME_LIMIT,
-        non_formal=True,
-    )
-    prepared = False
+    source_checkpoint_sha256: str,
+) -> tuple[DenseSPNetCache, dict[str, object]] | None:
+    """Load a structure-stage prediction cache only through its manifest hash."""
+    manifest_path = source_checkpoint.with_name("run_manifest.json")
     try:
-        validate_dataset_identity(
-            checkpoint_identity,
-            normalize_dataset_identity(source.start_identity()),
-        )
-        with torch.no_grad():
-            report = evaluate_frames(
-                model,
-                source.frames(),
-                renderer=render,
-                image_metrics=evaluator,
-                policy=policy,
-                map_every=1,
-            )
-        receipt = source.prepare_close()
-        prepared = True
-        source.commit()
-        return report, receipt
-    except BaseException as exc:
-        if prepared:
-            source.rollback_commit(exc)
-        else:
-            source.abort(exc)
-        raise
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Cannot read structure manifest: {manifest_path}") from exc
+    artifacts = manifest.get("artifacts") if isinstance(manifest, dict) else None
+    checkpoint_record = artifacts.get("checkpoint") if isinstance(artifacts, dict) else None
+    if (
+        not isinstance(checkpoint_record, dict)
+        or checkpoint_record.get("sha256") != source_checkpoint_sha256
+    ):
+        raise ValueError("Structure manifest does not bind the source checkpoint")
+    cache_record = artifacts.get("dense_spnet_cache")
+    if cache_record is None:
+        return None
+    if (
+        not isinstance(cache_record, dict)
+        or set(cache_record) != {"path", "sha256", "frame_count"}
+        or cache_record.get("path") != "spnet_dense.pt"
+        or type(cache_record.get("frame_count")) is not int
+        or cache_record["frame_count"] < 1
+        or not _valid_sha256(cache_record.get("sha256"))
+    ):
+        raise ValueError("Structure dense SPNet cache manifest is invalid")
+    cache_path = source_checkpoint.with_name("spnet_dense.pt")
+    if not cache_path.is_file() or sha256_file(cache_path) != cache_record["sha256"]:
+        raise ValueError("Structure dense SPNet cache hash does not match")
+    cache = load_dense_spnet_cache(cache_path)
+    if len(cache.frames) != cache_record["frame_count"]:
+        raise ValueError("Structure dense SPNet cache frame count does not match")
+    return cache, {
+        "schema_version": "sage-dense-spnet-reuse-v1",
+        "source_manifest_sha256": sha256_file(manifest_path),
+        "cache_sha256": cache_record["sha256"],
+        "cached_frame_indices": [frame.frame_index for frame in cache.frames],
+    }
 
 
 def run_appearance_refinement(
@@ -697,6 +504,15 @@ def run_appearance_refinement(
             device=device,
             model_root=config.model_root,
         )
+        cache_result = _load_mapping_dense_cache(
+            source_checkpoint,
+            source_checkpoint_sha256=source_sha256,
+        )
+        dense_provider = provider
+        cache_provenance = None
+        if cache_result is not None:
+            dense_cache, cache_provenance = cache_result
+            dense_provider = ReusingDenseSPNetProvider(dense_cache, provider)
         dense_prior_started = perf_counter()
 
         def report_dense_prior(
@@ -721,20 +537,31 @@ def run_appearance_refinement(
         )
         dense_priors = prepare_dense_priors(
             mapping_frames,
-            provider,
+            dense_provider,
             refinement.dense_prior,
             progress_callback=report_dense_prior,
         )
+        dense_prior_seconds = perf_counter() - dense_prior_started
         dense_prior_provenance = _dense_prior_record(
             mapping_frames,
             dense_priors,
-            provider_identity=provider.identity.payload(),
+            provider_identity=dense_provider.identity.payload(),
             alignment_variant=refinement.dense_prior.alignment_variant,
             max_relative_depth_jump=(
                 refinement.dense_normal_max_relative_depth_jump
             ),
+            prediction_cache=(
+                {
+                    **cache_provenance,
+                    "reused_frames": dense_provider.reused_frames,
+                    "live_frames": dense_provider.live_frames,
+                }
+                if isinstance(dense_provider, ReusingDenseSPNetProvider)
+                and cache_provenance is not None
+                else None
+            ),
         )
-        del provider
+        del dense_provider, provider
         torch.cuda.empty_cache()
         frame_by_index = {
             frame.index: frame
@@ -749,7 +576,14 @@ def run_appearance_refinement(
             source_payload,
             device=device,
         )
-        render_static = prepare_render_static(model)
+        optimizes_geometry = any(
+            name in refinement.optimized_parameters
+            for name in ("means3d", "log_scales", "rotations")
+        )
+        render_static = (
+            None if optimizes_geometry else prepare_render_static(model)
+        )
+        renderer = CachedRenderer()
         dense_policy = DenseGeometryPolicy(
             dense_depth_weight=0.0,
             dense_normal_weight=1.0,
@@ -783,7 +617,7 @@ def run_appearance_refinement(
                     "center": (source_types == 0) | (source_types == 3),
                     "fused5": (source_types == 1) | (source_types == 4),
                 },
-                "dense_static": prepare_dense_geometry_static(
+                "dense_normal_static": prepare_dense_normal_static(
                     dense_priors[frame.index],
                     target_rgb,
                     frame.intrinsics,
@@ -798,7 +632,7 @@ def run_appearance_refinement(
             _step: int,
         ) -> torch.Tensor | AppearanceObjective:
             frame = frame_by_index[frame_index]
-            output = render(item, frame, static=render_static)
+            output = renderer(item, frame, static=render_static)
             photometric_rgb = (
                 exposure_nuisance.apply(output.rgb, frame_index)
                 if exposure_nuisance is not None
@@ -809,7 +643,7 @@ def run_appearance_refinement(
                 frame,
                 refinement,
                 config.loss,
-                dense_priors.get(frame_index),
+                dense_policy=dense_policy,
                 photometric_rgb=photometric_rgb,
                 cached=appearance_cache[frame_index],
             )
@@ -846,10 +680,11 @@ def run_appearance_refinement(
             progress_every=_REFINEMENT_PROGRESS_EVERY,
             progress_callback=report_refinement_progress,
         )
-        frozen_names = _GEOMETRY_AND_TOPOLOGY_TENSORS + (
-            ("opacity_logits",)
-            if "opacity_logits" not in refinement.optimized_parameters
-            else ()
+        optimization_seconds = perf_counter() - refinement_started
+        frozen_names = _TOPOLOGY_TENSORS + tuple(
+            name
+            for name in TrainableGaussians.PARAMETER_NAMES
+            if name not in refinement.optimized_parameters
         )
         frozen_verification = verify_frozen_tensors(
             model,
@@ -908,6 +743,10 @@ def run_appearance_refinement(
             "frozen_tensor_verification": frozen_verification,
             "completion_receipts": {"training_frames": training_receipt},
             "duration_seconds": perf_counter() - started,
+            "timings": {
+                "dense_prior_seconds": dense_prior_seconds,
+                "optimization_seconds": optimization_seconds,
+            },
             "artifacts": {
                 "checkpoint": "appearance_checkpoint.pt",
                 "checkpoint_sha256": sha256_file(checkpoint_path),

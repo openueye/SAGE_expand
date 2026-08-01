@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import torch
 
 from ..foundation.config import GaussianInitializationConfig, GrowthConfig
 from ..foundation.contracts import DepthEvidence, FrameInputs, GaussianAppendBatch, GrowthInputs, SourceType
 from .geometry import backproject_depth
-from .rendering import RenderOutput
+from .losses import alpha_normalized_depth
 from ..foundation.source_policy import SOURCE_DESCRIPTORS, descriptor_for_type, descriptors_for_types, source_policy_value
+
+if TYPE_CHECKING:
+    from .rendering import RenderOutput
 
 
 @dataclass(frozen=True)
@@ -77,6 +81,11 @@ class GrowthBuilder:
             raise ValueError("Rendered output dimensions do not match frame")
         target_rgb = torch.as_tensor(frame.rgb, dtype=torch.float32, device=self.device)
         rgb_residual = (rendered.rgb - target_rgb).abs().mean(dim=-1)
+        rendered_depth = alpha_normalized_depth(
+            rendered.accumulated_depth,
+            rendered.alpha,
+        )
+        rendered_depth_valid = torch.isfinite(rendered_depth) & (rendered_depth > 0)
         coverage_gate = torch.isfinite(rendered.alpha) & (rendered.alpha < self.config.coverage_alpha_threshold)
         coverage_gate &= torch.isfinite(rendered.rgb).all(dim=-1) & (rgb_residual > self.config.rgb_residual_threshold)
         stats = self._empty_stats(active_descriptors)
@@ -115,8 +124,6 @@ class GrowthBuilder:
             confidence_valid = in_range & torch.isfinite(confidence) & (confidence >= confidence_threshold)
             _increment_rejection(source_stats, "below_confidence", int((in_range & ~confidence_valid).sum()))
             residual = source_policy_value(self.config.residual_thresholds, descriptor.name)
-            rendered_depth = rendered.accumulated_depth
-            rendered_depth_valid = torch.isfinite(rendered_depth) & (rendered_depth > 0)
             tolerance = torch.maximum(torch.full_like(depth, residual.absolute_m), residual.relative * depth)
             geometry_gate = rendered_depth_valid & valid & ((rendered_depth - depth).abs() > tolerance)
             gate = confidence_valid & (coverage_gate | geometry_gate)
@@ -161,8 +168,7 @@ class GrowthBuilder:
             source_type = descriptor.source_type
             name = descriptor.name
             stats[name]["accepted"] = int((source_types == int(source_type)).sum())
-        rgb = torch.as_tensor(frame.rgb, dtype=torch.float32, device=self.device)
-        colors = rgb[pixels[:, 0], pixels[:, 1]]
+        colors = target_rgb[pixels[:, 0], pixels[:, 1]]
         focal = (frame.intrinsics.fx + frame.intrinsics.fy) * 0.5
         base_scales = (camera_depths / focal).clamp_min(self.scale_clamp_min)
         batch = GaussianAppendBatch(

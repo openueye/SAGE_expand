@@ -156,11 +156,16 @@ def verify(
         ModelRegistry,
         default_registry_path,
     )
-    from .engine.rendering import _load_renderer_extension, capture_renderer_identity
+    from .engine.rendering import (
+        _gsplat_extension_path,
+        _gsplat_package_path,
+        capture_renderer_identity,
+    )
     from .foundation.code_identity import repository_code_identity
 
-    renderer_package = _load_renderer_extension()
     renderer_identity = capture_renderer_identity()
+    renderer_package_path = _gsplat_package_path()
+    renderer_extension_path = _gsplat_extension_path()
     resolved_model_root = (
         Path(model_root).expanduser().resolve()
         if model_root is not None
@@ -213,8 +218,8 @@ def verify(
         "torchmetrics_path": str(_module_path("torchmetrics")),
         "opencv_path": str(_module_path("cv2")),
         "opencv": __import__("cv2").__version__,
-        "renderer_package_path": str(Path(renderer_package.__file__).resolve()),
-        "renderer_extension_path": str(Path(renderer_package._C.__file__).resolve()),
+        "renderer_package_path": str(renderer_package_path),
+        "renderer_extension_path": str(renderer_extension_path),
         "renderer_identity": renderer_identity,
         "spnet_source_path": str((spnet_source_root / "src" / "networks.py").resolve()),
         "spnet_identity": {

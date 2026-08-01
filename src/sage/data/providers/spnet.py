@@ -365,6 +365,14 @@ class SPNetPredictor(Protocol):
     ) -> torch.Tensor: ...
 
 
+@dataclass(frozen=True)
+class SPNetEvidenceBundle:
+    """Dense refinement evidence and sparse growth evidence from one prediction."""
+
+    dense_evidence: DepthEvidence
+    growth_evidence: DepthEvidence
+
+
 def _sha256_labeled_content(files: tuple[tuple[str, bytes], ...]) -> str:
     digest = hashlib.sha256()
     for label, content in files:
@@ -583,6 +591,17 @@ class OnlineSPNetProvider:
         self._record_frame(frame)
         return evidence
 
+    def evidence_bundle_for(self, frame: FrameInputs) -> SPNetEvidenceBundle:
+        bundle = predict_spnet_evidence_bundle(
+            frame,
+            self._predict,
+            depth_scale_m=self._config.depth_scale_m,
+            confidence=self._config.confidence,
+            sample_stride=self._config.sample_stride,
+        )
+        self._record_frame(frame)
+        return bundle
+
     def _record_frame(self, frame: FrameInputs) -> None:
         self._identity = replace(
             self._identity,
@@ -727,38 +746,6 @@ def predict_spnet_dense_evidence(
     )
 
 
-def restore_spnet_prediction(
-    prediction: torch.Tensor,
-    center: DepthEvidence,
-    *,
-    depth_scale_m: float,
-) -> np.ndarray:
-    """Restore exact LiDAR anchors into a native-grid SPNet prediction."""
-    if center.source_type not in {
-        SourceType.LIDAR_RAW,
-        SourceType.LIDAR_SLAM_CENTER,
-    }:
-        raise ValueError(
-            "SPNet anchor restoration requires center-anchor evidence"
-        )
-    grid = derive_spnet_grid(center.depth_m.shape)
-    prediction = _validated_prediction(
-        prediction,
-        expected_size=grid.network_size,
-    )
-    prediction = prediction[:, :, :grid.native_height, :grid.native_width]
-    depth = (
-        prediction[0, 0].numpy()
-        * _positive_float(depth_scale_m, "SPNet depth_scale_m")
-    ).astype(np.float32, copy=False)
-    depth[center.valid_mask] = center.depth_m[center.valid_mask]
-    if not np.isfinite(depth).all():
-        raise FloatingPointError(
-            "Restored SPNet prediction contains non-finite values"
-        )
-    return depth
-
-
 def build_spnet_blind_evidence(
     restored_depth_m: np.ndarray,
     center: DepthEvidence,
@@ -825,6 +812,33 @@ def predict_spnet_evidence(
     sample_stride: int,
 ) -> DepthEvidence:
     """Produce sparse blind-region evidence for structure growth."""
+    return predict_spnet_evidence_bundle(
+        frame,
+        predictor,
+        depth_scale_m=depth_scale_m,
+        confidence=confidence,
+        sample_stride=sample_stride,
+    ).growth_evidence
+
+
+def predict_spnet_evidence_bundle(
+    frame: FrameInputs,
+    predictor: (
+        SPNetPredictor
+        | Callable[[torch.Tensor, torch.Tensor, torch.Tensor], torch.Tensor]
+    ),
+    *,
+    depth_scale_m: float,
+    confidence: float,
+    sample_stride: int,
+) -> SPNetEvidenceBundle:
+    """Build both SAGE SPNet views while invoking the network exactly once."""
+    dense = predict_spnet_dense_evidence(
+        frame,
+        predictor,
+        depth_scale_m=depth_scale_m,
+        confidence=confidence,
+    )
     by_source = {
         evidence.source_type: evidence
         for evidence in frame.growth.evidences
@@ -836,43 +850,13 @@ def predict_spnet_evidence(
         fused_type = SourceType.LIDAR_SLAM_FUSED5
     if center is None:
         raise ValueError("SPNet prediction requires center-anchor evidence")
-    if (
-        SourceType.LIDAR_RAW in by_source
-        and SourceType.LIDAR_SLAM_CENTER in by_source
-    ):
-        raise ValueError("SPNet prediction cannot mix LiDAR source families")
-    inputs = prepare_spnet_inputs(
-        frame.rgb,
-        center,
-        depth_scale_m=depth_scale_m,
-    )
-    grid = derive_spnet_grid(center.depth_m.shape)
-    prediction = _validated_prediction(
-        predictor(*inputs),
-        expected_size=grid.network_size,
-    )
-    native = prediction[:, :, :grid.native_height, :grid.native_width]
-    quality_bias_m = _spnet_prediction_quality_check(
-        native,
-        center,
-        depth_scale_m=depth_scale_m,
-    )
-    if abs(quality_bias_m) >= 0.1:
-        warnings.warn(
-            f"SPNet prediction quality poor on frame {frame.stem}: "
-            f"absolute mean depth bias {abs(quality_bias_m):.3f}m >= 0.1m",
-            RuntimeWarning,
-            stacklevel=2,
-        )
-    restored = restore_spnet_prediction(
-        prediction,
-        center,
-        depth_scale_m=depth_scale_m,
-    )
-    return build_spnet_blind_evidence(
+    restored = dense.depth_m.copy()
+    restored[center.valid_mask] = center.depth_m[center.valid_mask]
+    growth = build_spnet_blind_evidence(
         restored,
         center,
         by_source.get(fused_type),
         confidence=confidence,
         sample_stride=sample_stride,
     )
+    return SPNetEvidenceBundle(dense, growth)

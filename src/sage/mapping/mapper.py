@@ -10,12 +10,14 @@ import numpy as np
 import torch
 
 from ..data.providers.spnet import SPNetEvidenceProvider
+from ..data.providers.spnet_cache import DenseSPNetFrame
 from ..engine.geometry import (
     build_optimization_schedule,
+    is_mapping_frame,
     select_current_anchored_global_views,
 )
 from ..engine.growth import GrowthBuilder
-from ..engine.losses import mapping_loss
+from ..engine.losses import mapping_loss, mapping_training_loss
 from ..engine.model import TrainableGaussians
 from ..engine.rendering import RenderOutput, Renderer
 from ..foundation.config import (
@@ -26,12 +28,8 @@ from ..foundation.config import (
     MappingLossConfig,
     PruningConfig,
 )
-from ..foundation.contracts import FrameInputs, SourceType
+from ..foundation.contracts import DepthEvidence, FrameInputs, SourceType
 from ..foundation.source_policy import SOURCE_DESCRIPTORS, descriptor_for_type, descriptors_for_types, opacity_keep_mask, source_counts
-
-
-def is_mapping_frame(frame_index: int, *, map_every: int) -> bool:
-    return frame_index == 0 or (frame_index + 1) % map_every == 0
 
 
 def should_invoke_spnet(
@@ -57,6 +55,22 @@ def expected_spnet_invocations(
             mapping,
         )
         for frame_index in range(processed_frames)
+    )
+
+
+def mapping_spnet_evidence(
+    provider: SPNetEvidenceProvider,
+    frame: FrameInputs,
+) -> tuple[DepthEvidence | None, DenseSPNetFrame | None]:
+    """Use bundled dense evidence when supported, preserving legacy providers."""
+    bundle_for = getattr(provider, "evidence_bundle_for", None)
+    if bundle_for is None:
+        return provider.evidence_for(frame), None
+    bundle = bundle_for(frame)
+    return bundle.growth_evidence, DenseSPNetFrame(
+        frame.index,
+        frame.stem,
+        bundle.dense_evidence.depth_m.copy(),
     )
 
 
@@ -138,6 +152,14 @@ class MappingRun:
     optimizer_append_migrations: int = 0
     optimizer_prune_migrations: int = 0
     spnet_anchor_source_types: tuple[str, ...] = ()
+    dense_spnet_frames: tuple[DenseSPNetFrame, ...] = ()
+
+
+@dataclass(frozen=True)
+class _CachedFrameTargets:
+    rgb: torch.Tensor
+    depth: torch.Tensor
+    source_masks: dict[str, torch.Tensor]
 
 
 class MappingEngine:
@@ -161,7 +183,7 @@ class MappingEngine:
         self.spnet_min_prune_age = pruning.spnet_min_prune_age
         self.device = torch.device(device)
         if renderer is None:
-            raise RuntimeError("Production mapping requires the vendored CUDA renderer")
+            raise RuntimeError("Production mapping requires the gsplat CUDA renderer")
         self.renderer = renderer
         self.metric_evaluator = metric_evaluator
         self.gaussian_initialization = gaussian_initialization
@@ -176,20 +198,46 @@ class MappingEngine:
         """Render once at the raw seam shared by growth, loss, and evaluation."""
         return self.renderer(model, frame)
 
-    def _target_rgb(
-        self, frame: FrameInputs, cache: dict[int, torch.Tensor],
-    ) -> torch.Tensor:
-        """GPU-resident RGB, cached per frame index for the run's lifetime.
+    def _targets(
+        self,
+        frame: FrameInputs,
+        cache: dict[int, _CachedFrameTargets],
+    ) -> _CachedFrameTargets:
+        """Return GPU-resident loss targets cached for the run's lifetime.
 
         Optimization views are resampled with replacement across iterations and
-        commits, so without caching the same image gets re-uploaded from numpy
-        every time it's picked.
+        commits. Cache every immutable target consumed by the mapping loss so a
+        repeated keyframe does not cross the NumPy-to-CUDA seam again.
         """
-        tensor = cache.get(frame.index)
-        if tensor is None:
-            tensor = torch.as_tensor(frame.rgb, dtype=torch.float32, device=self.device)
-            cache[frame.index] = tensor
-        return tensor
+        targets = cache.get(frame.index)
+        if targets is None:
+            source_types = torch.as_tensor(
+                frame.mapping.source_types,
+                dtype=torch.uint8,
+                device=self.device,
+            )
+            targets = _CachedFrameTargets(
+                rgb=torch.as_tensor(
+                    frame.rgb, dtype=torch.float32, device=self.device,
+                ),
+                depth=torch.as_tensor(
+                    frame.mapping.depth_m,
+                    dtype=torch.float32,
+                    device=self.device,
+                ),
+                source_masks={
+                    "center": (
+                        (source_types == int(SourceType.LIDAR_RAW))
+                        | (source_types == int(SourceType.LIDAR_SLAM_CENTER))
+                    ),
+                    "fused5": (
+                        (source_types == int(SourceType.LIDAR_FUSED5))
+                        | (source_types == int(SourceType.LIDAR_SLAM_FUSED5))
+                    ),
+                },
+            )
+            cache[frame.index] = targets
+        return targets
 
     @staticmethod
     def _optimizer_step(optimizer: torch.optim.Optimizer) -> int:
@@ -224,11 +272,12 @@ class MappingEngine:
         optimizer_prune_migrations = 0
         keyframes: list[int] = []
         keyframe_by_index: dict[int, FrameInputs] = {}
-        rgb_cache: dict[int, torch.Tensor] = {}
+        target_cache: dict[int, _CachedFrameTargets] = {}
         commits: list[MappingCommit] = []
         actual_spnet_invocations = 0
         spnet_inference_seconds: list[float] = []
         spnet_anchor_source_types: set[str] = set()
+        dense_spnet_frames: list[DenseSPNetFrame] = []
         processed_frames = 0
         commit_ordinal_by_frame_index: dict[int, int] = {}
         for frame in chain((first_frame,), frame_iterator):
@@ -283,7 +332,12 @@ class MappingEngine:
                         if self.device.type == "cuda":
                             torch.cuda.synchronize(self.device)
                         provider_started = perf_counter()
-                        provider_evidence = self.spnet_provider.evidence_for(frame)
+                        provider_evidence, dense_spnet_frame = mapping_spnet_evidence(
+                            self.spnet_provider,
+                            frame,
+                        )
+                        if dense_spnet_frame is not None:
+                            dense_spnet_frames.append(dense_spnet_frame)
                         if self.device.type == "cuda":
                             torch.cuda.synchronize(self.device)
                         spnet_inference_elapsed = perf_counter() - provider_started
@@ -312,7 +366,6 @@ class MappingEngine:
                     if added_count:
                         optimizer_append_migrations += 1
                 final_loss = 0.0
-                final_terms: dict[str, torch.Tensor] | None = None
                 active_descriptors = descriptors_for_types(model.source_types)
                 pruned_by_source = {descriptor.name: 0 for descriptor in active_descriptors}
                 pruned_by_reason = {"opacity_only": 0, "scale_only": 0, "opacity_and_scale": 0}
@@ -331,14 +384,17 @@ class MappingEngine:
                     selected_frame = frame if selected_index == frame.index else keyframe_by_index[selected_index]
                     optimizer.zero_grad(set_to_none=True)
                     output = self._render(model, selected_frame)
-                    target_rgb = self._target_rgb(selected_frame, rgb_cache)
-                    loss, terms = mapping_loss(
+                    targets = self._targets(selected_frame, target_cache)
+                    loss = mapping_training_loss(
                         output.rgb,
-                        target_rgb,
+                        targets.rgb,
                         output.accumulated_depth,
                         selected_frame.mapping,
                         rendered_alpha=output.alpha,
                         policy=self.loss_policy,
+                        target_depth=targets.depth,
+                        source_masks=targets.source_masks,
+                        validate_rgb=False,
                     )
                     torch._assert_async(
                         torch.isfinite(loss),
@@ -369,20 +425,20 @@ class MappingEngine:
                             newborn_protected_id_chunks.append(prune_result.newborn_protected_ids)
                         for name, count in prune_result.mature_opacity_removed_by_source.items():
                             mature_opacity_removed_by_source[name] += count
-                    final_terms = terms
-                if final_terms is None:
-                    raise RuntimeError("Mapping commit completed without a final loss")
                 with torch.no_grad():
                     final_output = self._render(model, frame)
-                    final_target_rgb = self._target_rgb(frame, rgb_cache)
+                    final_targets = self._targets(frame, target_cache)
                     _, final_terms = mapping_loss(
                         final_output.rgb,
-                        final_target_rgb,
+                        final_targets.rgb,
                         final_output.accumulated_depth,
                         frame.mapping,
                         rendered_alpha=final_output.alpha,
                         policy=self.loss_policy,
                         collect_diagnostics=True,
+                        target_depth=final_targets.depth,
+                        source_masks=final_targets.source_masks,
+                        validate_rgb=False,
                     )
                 final_loss = float(final_terms["total"].detach())
                 if newborn_protected_id_chunks:
@@ -398,7 +454,7 @@ class MappingEngine:
                     with torch.no_grad():
                         quality = self.metric_evaluator(
                             final_output.rgb,
-                            self._target_rgb(frame, rgb_cache),
+                            final_targets.rgb,
                         )
                 if self.device.type == "cuda":
                     torch.cuda.synchronize(self.device)
@@ -510,6 +566,7 @@ class MappingEngine:
             optimizer_append_migrations=optimizer_append_migrations,
             optimizer_prune_migrations=optimizer_prune_migrations,
             spnet_anchor_source_types=tuple(sorted(spnet_anchor_source_types)),
+            dense_spnet_frames=tuple(dense_spnet_frames),
         )
 
     @staticmethod

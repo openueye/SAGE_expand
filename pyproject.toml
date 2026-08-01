@@ -16,6 +16,7 @@ dependencies = [
   "opencv-python==5.0.0.93",
   "Pillow==12.2.0",
   "torch==2.5.1",
+  "gsplat==1.5.3",
   "torchmetrics==1.9.0",
   "plyfile==1.1.4",
   "PyYAML==6.0.3",

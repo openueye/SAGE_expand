@@ -249,7 +249,10 @@ def _validate_dense_prior(
 ) -> list[int]:
     if (
         not isinstance(value, dict)
-        or set(value) != {"provider_identity", "frames"}
+        or set(value) not in (
+            {"provider_identity", "frames"},
+            {"provider_identity", "frames", "prediction_cache"},
+        )
         or not isinstance(value["frames"], list)
         or not value["frames"]
     ):
@@ -343,6 +346,38 @@ def _validate_dense_prior(
         raise ValueError(
             "Appearance refinement dense prior provider frames do not match"
         )
+    cache = value.get("prediction_cache")
+    if cache is not None:
+        expected_cache = {
+            "schema_version",
+            "source_manifest_sha256",
+            "cache_sha256",
+            "cached_frame_indices",
+            "reused_frames",
+            "live_frames",
+        }
+        cached_indices = (
+            cache.get("cached_frame_indices")
+            if isinstance(cache, dict)
+            else None
+        )
+        if (
+            not isinstance(cache, dict)
+            or set(cache) != expected_cache
+            or cache.get("schema_version") != "sage-dense-spnet-reuse-v1"
+            or not _is_hex_digest(cache.get("source_manifest_sha256"), 64)
+            or not _is_hex_digest(cache.get("cache_sha256"), 64)
+            or not isinstance(cached_indices, list)
+            or cached_indices != sorted(set(cached_indices))
+            or any(index not in indices for index in cached_indices)
+            or type(cache.get("reused_frames")) is not int
+            or type(cache.get("live_frames")) is not int
+            or cache["reused_frames"] != len(cached_indices)
+            or cache["reused_frames"] + cache["live_frames"] != len(indices)
+        ):
+            raise ValueError(
+                "Appearance refinement dense prediction cache is invalid"
+            )
     return indices
 
 
@@ -522,5 +557,4 @@ def load_checkpoint(path: Path) -> dict[str, object]:
     if version == APPEARANCE_REFINEMENT_CHECKPOINT_VERSION:
         _validate_refinement(payload["appearance_refinement"])
     return payload
-
 

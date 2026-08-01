@@ -6,6 +6,11 @@ import torch
 from ..foundation.contracts import CameraIntrinsics, Pose
 
 
+def is_mapping_frame(frame_index: int, *, map_every: int) -> bool:
+    """Return whether an accepted source frame belongs to the mapping cohort."""
+    return frame_index == 0 or (frame_index + 1) % map_every == 0
+
+
 def rotation_wc(pose: Pose, *, device: torch.device | str = "cpu") -> torch.Tensor:
     quaternion = torch.tensor([pose.qx, pose.qy, pose.qz, pose.qw], dtype=torch.float32, device=device)
     quaternion = quaternion / torch.linalg.vector_norm(quaternion)
@@ -45,11 +50,6 @@ def backproject_depth(
     translation = torch.tensor(pose.translation, dtype=torch.float32, device=depth.device)
     world = camera @ rotation_wc(pose, device=depth.device).T + translation
     return world, pixels, z
-
-
-def world_to_camera(points: torch.Tensor, pose: Pose) -> torch.Tensor:
-    translation = torch.tensor(pose.translation, dtype=torch.float32, device=points.device)
-    return (points - translation) @ rotation_wc(pose, device=points.device)
 
 
 def select_current_anchored_global_views(
