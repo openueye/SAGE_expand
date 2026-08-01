@@ -10,7 +10,6 @@ from sage.engine.rendering import (
     RenderOutput,
     RenderStaticFields,
     _camera_matrices,
-    alpha_normalize_render_output_depth,
     capture_renderer_identity,
     prepare_render_static,
     render,
@@ -75,20 +74,8 @@ def test_render_static_fields_preserve_public_contract() -> None:
     ]
 
 
-def test_depth_normalization_compatibility_reexport() -> None:
-    output = RenderOutput(
-        rgb=torch.zeros((1, 2, 3)),
-        depth=torch.tensor([[1.0, 0.0]]),
-        alpha=torch.tensor([[0.5, 0.0]]),
-    )
-
-    normalized = alpha_normalize_render_output_depth(output, min_alpha=0.1)
-
-    torch.testing.assert_close(normalized.depth, torch.tensor([[2.0, 0.0]]))
-
-
 def test_legacy_repository_renderer_identity_is_rejected() -> None:
-    assert set(_DEPENDENCY_FIELDS["renderer"]) == {"unavailable", "pip-package"}
+    assert set(_DEPENDENCY_FIELDS["renderer"]) == {"pip-package"}
 
 
 def test_renderer_identity_records_cuda_arch_build_input(

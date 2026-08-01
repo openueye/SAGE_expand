@@ -345,30 +345,3 @@ class PreparedSceneWriter:
         diagnostic.rmdir()
         self.output.rename(diagnostic)
         return diagnostic
-
-
-def publish_prepared_scene(
-    output_dir: Path,
-    *,
-    profile: PreparationProfile,
-    centers: Iterable[ProjectedCenter],
-    rejected_centers: Iterable[RejectedCenter],
-    input_files: Mapping[str, Path],
-    producer_identity: Mapping[str, object],
-    non_formal: bool,
-    production_receipt: Mapping[str, object] | None = None,
-) -> Path:
-    writer = PreparedSceneWriter(
-        output_dir,
-        profile=profile,
-        input_files=input_files,
-        producer_identity=producer_identity,
-        non_formal=non_formal,
-    )
-    try:
-        for result in centers:
-            writer.write(result)
-        return writer.finish(rejected_centers, production_receipt=production_receipt)
-    except BaseException as exc:
-        writer.abort(exc)
-        raise

@@ -143,7 +143,7 @@ class RunInputIdentity:
                 )
                 if current_manifest_hash != self.prepared_manifest_sha256 or current_content_hash != self.scene_content_sha256:
                     raise ValueError("Prepared Scene content changed")
-                if str(manifest.get("source", {}).get("mode", manifest.get("source_mode"))) != self.source_mode:
+                if str(manifest["source"]["mode"]) != self.source_mode:
                     raise ValueError("Prepared Scene source mode changed")
             else:
                 identity = self.frame_source_identity

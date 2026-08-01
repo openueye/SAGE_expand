@@ -15,11 +15,6 @@ import torch
 from ..artifacts import load_checkpoint
 from ..data.frame_source import frame_source_for_config
 from ..data.providers.spnet import OnlineSPNetProvider
-from ..engine.evaluation import (
-    EvaluationDepthPolicy,
-    aggregate_evaluation_frame_reports,
-    evaluate_frames,
-)
 from ..engine.losses import mapping_loss, photometric_loss
 from ..engine.metrics import ImageMetricEvaluator
 from ..engine.model import TrainableGaussians
@@ -337,130 +332,6 @@ def _valid_sha256(value: object) -> bool:
     )
 
 
-def evaluation_cohorts(
-    report: dict[str, object],
-    *,
-    map_every: int,
-    policy: EvaluationDepthPolicy,
-) -> dict[str, dict[str, object]]:
-    """Split one all-frame render report into disjoint mapping/held-out cohorts."""
-    frames = report.get("frames")
-    if not isinstance(frames, list):
-        raise ValueError("Appearance evaluation report lacks frame records")
-    mapping = [
-        frame
-        for frame in frames
-        if is_mapping_frame(int(frame["index"]), map_every=map_every)
-    ]
-    held_out = [
-        frame
-        for frame in frames
-        if not is_mapping_frame(int(frame["index"]), map_every=map_every)
-    ]
-    if not mapping or not held_out:
-        raise ValueError(
-            "Appearance evaluation requires non-empty mapping and held-out cohorts"
-        )
-    return {
-        "all": report,
-        "mapping": aggregate_evaluation_frame_reports(
-            mapping,
-            policy=policy,
-        ),
-        "held_out": aggregate_evaluation_frame_reports(
-            held_out,
-            policy=policy,
-        ),
-    }
-
-
-def _metric_values(frame: dict[str, object]) -> dict[str, float]:
-    image = frame["image"]
-    geometry = frame["geometry"]
-    return {
-        "psnr": float(image["psnr"]),
-        "ssim": float(image["ssim"]),
-        "lpips": float(image["lpips"]),
-        "depth_mae_m": float(geometry["depth"]["total"]["mae_m"]),
-    }
-
-
-def compare_evaluation_cohorts(
-    baseline: dict[str, dict[str, object]],
-    candidate: dict[str, dict[str, object]],
-) -> dict[str, object]:
-    """Report continuous deltas and per-frame directions without a gate."""
-    comparison: dict[str, object] = {}
-    for cohort in ("all", "mapping", "held_out"):
-        baseline_report = baseline[cohort]
-        candidate_report = candidate[cohort]
-        baseline_frames = {
-            int(frame["index"]): frame
-            for frame in baseline_report["frames"]
-        }
-        candidate_frames = {
-            int(frame["index"]): frame
-            for frame in candidate_report["frames"]
-        }
-        if set(baseline_frames) != set(candidate_frames):
-            raise ValueError(
-                f"Appearance {cohort} evaluation frame sets do not match"
-            )
-        directions = {
-            "psnr": 1,
-            "ssim": 1,
-            "lpips": -1,
-            "depth_mae_m": -1,
-        }
-        per_metric = {}
-        for name, direction in directions.items():
-            wins = ties = losses = 0
-            for index in baseline_frames:
-                before = _metric_values(baseline_frames[index])[name]
-                after = _metric_values(candidate_frames[index])[name]
-                signed = direction * (after - before)
-                if signed > 0:
-                    wins += 1
-                elif signed < 0:
-                    losses += 1
-                else:
-                    ties += 1
-            per_metric[name] = {
-                "wins": wins,
-                "ties": ties,
-                "losses": losses,
-            }
-        baseline_aggregate = baseline_report["aggregate"]
-        candidate_aggregate = candidate_report["aggregate"]
-        comparison[cohort] = {
-            "frame_count": len(baseline_frames),
-            "aggregate_delta": {
-                "psnr": (
-                    candidate_aggregate["image"]["psnr"]
-                    - baseline_aggregate["image"]["psnr"]
-                ),
-                "ssim": (
-                    candidate_aggregate["image"]["ssim"]
-                    - baseline_aggregate["image"]["ssim"]
-                ),
-                "lpips": (
-                    candidate_aggregate["image"]["lpips"]
-                    - baseline_aggregate["image"]["lpips"]
-                ),
-                "depth_mae_m": (
-                    candidate_aggregate["depth"]["total"]["mae_m"]
-                    - baseline_aggregate["depth"]["total"]["mae_m"]
-                ),
-                "alpha_mean": (
-                    candidate_aggregate["alpha"]["total"]["mean"]
-                    - baseline_aggregate["alpha"]["total"]["mean"]
-                ),
-            },
-            "per_frame": per_metric,
-        }
-    return comparison
-
-
 def appearance_checkpoint_payload(
     source: dict[str, object],
     model: TrainableGaussians,
@@ -525,45 +396,6 @@ def appearance_checkpoint_payload(
     return payload
 
 
-def appearance_milestone_state_payload(
-    model: TrainableGaussians,
-    optimizer_state: dict[str, object],
-    *,
-    config: AppearanceRefinementConfig,
-    optimizer_step: int,
-    source_checkpoint_sha256: str,
-    refinement_config_sha256: str,
-    producer_code: dict[str, object],
-) -> dict[str, object]:
-    """Build a diagnostic milestone explicitly unsuitable for resumption."""
-    if (
-        type(optimizer_step) is not int
-        or optimizer_step < 1
-        or not _valid_sha256(source_checkpoint_sha256)
-        or not _valid_sha256(refinement_config_sha256)
-    ):
-        raise ValueError("Appearance milestone identity is invalid")
-    return {
-        "schema_version": "sage-appearance-milestone-state-v1",
-        "status": "incomplete",
-        "resumable": False,
-        "optimizer_step": optimizer_step,
-        "source_checkpoint_sha256": source_checkpoint_sha256,
-        "refinement_config_sha256": refinement_config_sha256,
-        "producer_code": deepcopy(producer_code),
-        "model_tensors": {
-            name: getattr(model, name).detach().cpu()
-            for name in model.PARAMETER_NAMES + (
-                "gaussian_ids",
-                "created_at",
-                "source_types",
-                "source_confidences",
-            )
-        },
-        "optimizer_state": deepcopy(optimizer_state),
-    }
-
-
 def _consume_mapping_frames(
     config: SageConfig,
     checkpoint_identity: dict[str, object],
@@ -595,46 +427,6 @@ def _consume_mapping_frames(
         prepared = True
         source.commit()
         return frames, receipt
-    except BaseException as exc:
-        if prepared:
-            source.rollback_commit(exc)
-        else:
-            source.abort(exc)
-        raise
-
-
-def _evaluate_all_frames(
-    config: SageConfig,
-    model: TrainableGaussians,
-    checkpoint_identity: dict[str, object],
-    *,
-    evaluator: ImageMetricEvaluator,
-    policy: EvaluationDepthPolicy,
-) -> tuple[dict[str, object], dict[str, object]]:
-    source = frame_source_for_config(
-        config.scene,
-        frame_limit=ALL_ACCEPTED_FRAME_LIMIT,
-        non_formal=True,
-    )
-    prepared = False
-    try:
-        validate_dataset_identity(
-            checkpoint_identity,
-            normalize_dataset_identity(source.start_identity()),
-        )
-        with torch.no_grad():
-            report = evaluate_frames(
-                model,
-                source.frames(),
-                renderer=render,
-                image_metrics=evaluator,
-                policy=policy,
-                map_every=1,
-            )
-        receipt = source.prepare_close()
-        prepared = True
-        source.commit()
-        return report, receipt
     except BaseException as exc:
         if prepared:
             source.rollback_commit(exc)

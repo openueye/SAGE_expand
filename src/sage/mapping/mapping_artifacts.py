@@ -25,7 +25,6 @@ from .run_identity import RunInputIdentity
 
 RUN_MANIFEST_SCHEMA_VERSION = "sage-run-manifest-v1"
 
-_MAPPING_COMMIT_FIELDS = set(MappingCommit.__dataclass_fields__)
 _DIAGNOSTIC_FIELDS = {
     "loss": {"photo", "geo_center", "geo_fused5", "hit_center", "hit_fused5", "total"},
     "depth": {"valid_pixels", "valid_center_pixels", "valid_fused5_pixels", "center_mae", "fused5_mae"},
@@ -89,6 +88,7 @@ def _checkpoint_payload(
 def _validate_run(run: MappingRun) -> None:
     previous = None
     for commit in run.commits:
+        _validate_commit_diagnostics(asdict(commit))
         if sum(commit.added_by_source.values()) != commit.added or sum(commit.pruned_by_source.values()) != commit.pruned:
             raise ValueError("Run commit source totals do not match scalar totals")
         if sum(commit.remaining_by_source.values()) != commit.gaussian_count:

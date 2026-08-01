@@ -76,8 +76,8 @@ class PreparedSceneFrameSource:
         if self._manifest is None:
             self._manifest = self._scene._validate_contract()
         manifest = self._manifest
-        source_mode = str(manifest.get("source", {}).get("mode", manifest.get("source_mode", "LIDAR_RAW")))
-        profile = str(manifest.get("preparation_profile", "sage-prepared-scene-v1"))
+        source_mode = str(manifest["source"]["mode"])
+        profile = str(manifest["preparation_profile"])
         return {
             "adapter": "prepared-scene",
             "receipt_schema": REPLAY_RECEIPT_SCHEMA,

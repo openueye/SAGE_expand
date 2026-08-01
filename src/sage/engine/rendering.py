@@ -93,17 +93,6 @@ def capture_renderer_identity() -> dict[str, object]:
     }
 
 
-def alpha_normalize_render_output_depth(
-    output: RenderOutput,
-    *,
-    min_alpha: float,
-) -> RenderOutput:
-    """Compatibility re-export; production rendering never normalizes depth."""
-    from .losses import alpha_normalize_render_output_depth as normalize
-
-    return normalize(output, min_alpha=min_alpha)
-
-
 def _camera_matrices(
     frame: FrameInputs, device: torch.device
 ) -> tuple[torch.Tensor, torch.Tensor]:

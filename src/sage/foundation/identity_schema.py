@@ -10,7 +10,6 @@ import json
 
 _DEPENDENCY_FIELDS = {
     "renderer": {
-        "unavailable": {"kind", "purpose"},
         "pip-package": {
             "kind", "package", "package_version", "extension_sha256",
             "adapter_schema", "python_soabi", "torch_version", "cuda_version",

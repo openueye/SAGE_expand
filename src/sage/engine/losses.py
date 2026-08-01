@@ -65,17 +65,6 @@ def alpha_normalized_depth(
     return torch.where(valid, normalized, torch.zeros_like(normalized))
 
 
-def alpha_normalize_render_output_depth(output: object, *, min_alpha: float) -> object:
-    """Compatibility adapter kept here so normalization remains off the renderer seam."""
-    from .rendering import RenderOutput
-
-    if not isinstance(output, RenderOutput):
-        raise ValueError("alpha normalization requires a RenderOutput")
-    valid = torch.isfinite(output.accumulated_depth) & torch.isfinite(output.alpha) & (output.alpha >= min_alpha)
-    normalized = alpha_normalized_depth(output.accumulated_depth, output.alpha)
-    return RenderOutput(output.rgb, torch.where(valid, normalized, torch.zeros_like(normalized)), output.alpha)
-
-
 def _source_masks(target_mapping: MappingObservation, device: torch.device) -> dict[str, torch.Tensor]:
     source_types = torch.as_tensor(target_mapping.source_types, dtype=torch.uint8, device=device)
     return {

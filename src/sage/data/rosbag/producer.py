@@ -9,7 +9,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from threading import RLock, get_ident
-from typing import Iterable, Iterator
+from typing import Iterator
 
 import numpy as np
 import cv2
@@ -44,7 +44,7 @@ from .geometry import (
     WorldCloudEvidence,
 )
 from .profiles import PreparationProfile, profile_for_name
-from .writer import publish_prepared_scene, sha256_file
+from .writer import sha256_file
 
 
 IMAGE_TOPIC = "/odin1/image/compressed"
@@ -1100,68 +1100,3 @@ def iter_projected_centers(
     local_receipt["bag_exhausted"] = image_start == 0 and image_limit is None
     local_receipt["truncated"] = not local_receipt["bag_exhausted"]
     local_receipt["complete"] = True
-
-
-def produce_prepared_scene(
-    rosbag_dir: Path,
-    output_dir: Path,
-    *,
-    preparation_profile: str = "odin1-slam-world-native-v1",
-    calibration_path: Path | None = None,
-    non_formal: bool = False,
-    confirm_raw_offset_time_seconds_from_scan_start: bool = False,
-    confirm_base_from_lidar_identity: bool = False,
-    image_start: int = 0,
-    image_limit: int | None = None,
-) -> Path:
-    if image_start < 0 or (image_limit is not None and image_limit < 5):
-        raise ValueError("Diagnostic image_start must be non-negative and image_limit must be at least five")
-    partial = image_start != 0 or image_limit is not None
-    non_formal = bool(non_formal or partial)
-    runtime = prepare_bag_runtime(
-        rosbag_dir,
-        preparation_profile=preparation_profile,
-        calibration_path=calibration_path,
-        non_formal=non_formal,
-        confirm_raw_offset_time_seconds_from_scan_start=confirm_raw_offset_time_seconds_from_scan_start,
-        confirm_base_from_lidar_identity=confirm_base_from_lidar_identity,
-    )
-    profile = runtime.profile
-    rejected_centers: list[RejectedCenter] = []
-    receipt: dict[str, object] = {
-        "receipt_schema": "materialized-prepared-scene-v1",
-        "complete": False,
-        "aborted": False,
-        "error": None,
-        "selected_image_slots": 0,
-        "finalized_slots": 0,
-        "rejected_slots": 0,
-        "edge_slots_not_emitted": 0,
-        "source_mode": profile.source.mode,
-        "source_families": [profile.source.mode],
-        "fallback_used": False,
-        "write_through_enabled": True,
-        "raw_offset_time_confirmed": confirm_raw_offset_time_seconds_from_scan_start,
-        "base_from_lidar_identity_confirmed": confirm_base_from_lidar_identity,
-    }
-
-    def emitted() -> Iterable[ProjectedCenter]:
-        yield from iter_projected_centers(
-            runtime,
-            image_start=image_start,
-            image_limit=image_limit,
-            receipt=receipt,
-            rejected_centers=rejected_centers,
-        )
-
-    input_files = {**runtime.input_files, "cam_in_ex.txt": runtime.calibration}
-    return publish_prepared_scene(
-        output_dir,
-        profile=profile,
-        centers=emitted(),
-        rejected_centers=rejected_centers,
-        input_files=input_files,
-        producer_identity=runtime.producer_identity,
-        non_formal=non_formal,
-        production_receipt=receipt,
-    )

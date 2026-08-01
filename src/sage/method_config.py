@@ -398,11 +398,8 @@ class SageMethodConfig:
             ),
             gaussian_initialization=GaussianInitializationConfig(
                 opacity=self.mapping["initial_opacity"],
-                scale_clamp_min=self.mapping.get("scale_clamp_min", 1e-4),
-                initial_scale_anisotropy=self.mapping.get(
-                    "initial_scale_anisotropy",
-                    (0.95, 1.05, 1.20),
-                ),
+                scale_clamp_min=self.mapping["scale_clamp_min"],
+                initial_scale_anisotropy=self.mapping["initial_scale_anisotropy"],
             ),
             loss=parts["loss"],
             model_root=self.runtime_model_root(),

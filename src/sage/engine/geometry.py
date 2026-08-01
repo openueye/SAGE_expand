@@ -47,11 +47,6 @@ def backproject_depth(
     return world, pixels, z
 
 
-def world_to_camera(points: torch.Tensor, pose: Pose) -> torch.Tensor:
-    translation = torch.tensor(pose.translation, dtype=torch.float32, device=points.device)
-    return (points - translation) @ rotation_wc(pose, device=points.device)
-
-
 def select_current_anchored_global_views(
     historical_indices: list[int] | tuple[int, ...],
     current_index: int,
