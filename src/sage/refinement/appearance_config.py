@@ -29,6 +29,9 @@ _FIELDS = {
     "sampling_variant",
     "color_learning_rate",
     "opacity_learning_rate",
+    "means3d_learning_rate",
+    "log_scales_learning_rate",
+    "rotations_learning_rate",
     "opacity_anchor_weight",
     "lidar_depth_weight",
     "dense_normal_weight",
@@ -43,6 +46,11 @@ _FIELDS = {
     "exposure_gauge_variant",
     "ssim_weight",
     "milestone_steps",
+}
+_GEOMETRY_LEARNING_RATE_FIELDS = {
+    "means3d_learning_rate",
+    "log_scales_learning_rate",
+    "rotations_learning_rate",
 }
 
 
@@ -80,6 +88,9 @@ class AppearanceRefinementConfig:
     sampling_variant: str
     color_learning_rate: float
     opacity_learning_rate: float
+    means3d_learning_rate: float
+    log_scales_learning_rate: float
+    rotations_learning_rate: float
     opacity_anchor_weight: float
     lidar_depth_weight: float
     dense_normal_weight: float
@@ -131,6 +142,12 @@ class AppearanceRefinementConfig:
                 self,
                 name,
                 _finite_number(getattr(self, name), name, positive=True),
+            )
+        for name in _GEOMETRY_LEARNING_RATE_FIELDS:
+            object.__setattr__(
+                self,
+                name,
+                _finite_number(getattr(self, name), name),
             )
         object.__setattr__(
             self,
@@ -184,7 +201,21 @@ class AppearanceRefinementConfig:
 
     @property
     def optimized_parameters(self) -> tuple[str, ...]:
-        return ("colors", "opacity_logits")
+        return tuple(
+            name
+            for name, learning_rate in self.learning_rates.items()
+            if learning_rate > 0
+        )
+
+    @property
+    def learning_rates(self) -> dict[str, float]:
+        return {
+            "means3d": self.means3d_learning_rate,
+            "colors": self.color_learning_rate,
+            "opacity_logits": self.opacity_learning_rate,
+            "log_scales": self.log_scales_learning_rate,
+            "rotations": self.rotations_learning_rate,
+        }
 
     @property
     def nuisance_parameters(self) -> tuple[str, ...]:
@@ -198,7 +229,9 @@ class AppearanceRefinementConfig:
         if not isinstance(payload, dict):
             raise ValueError("Appearance refinement config must be an object")
         unknown = sorted(set(payload) - _FIELDS)
-        missing = sorted(_FIELDS - set(payload))
+        missing = sorted(
+            _FIELDS - _GEOMETRY_LEARNING_RATE_FIELDS - set(payload)
+        )
         if unknown:
             raise ValueError(
                 "Unknown appearance refinement fields: "
@@ -209,8 +242,12 @@ class AppearanceRefinementConfig:
                 "Appearance refinement is missing required fields: "
                 + ", ".join(missing)
             )
-        milestones = payload["milestone_steps"]
-        dense_prior = payload["dense_prior"]
+        normalized_payload = {
+            **{name: 0.0 for name in _GEOMETRY_LEARNING_RATE_FIELDS},
+            **payload,
+        }
+        milestones = normalized_payload["milestone_steps"]
+        dense_prior = normalized_payload["dense_prior"]
         if not isinstance(milestones, list):
             raise ValueError(
                 "Appearance refinement milestone_steps must be a list"
@@ -227,7 +264,7 @@ class AppearanceRefinementConfig:
             ) from exc
         return cls(
             **{
-                **payload,
+                **normalized_payload,
                 "dense_prior": policy,
                 "milestone_steps": tuple(milestones),
             }

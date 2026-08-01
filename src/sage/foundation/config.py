@@ -214,20 +214,23 @@ class ResidualThreshold:
 
 @dataclass(frozen=True)
 class GrowthConfig:
-    coverage_alpha_threshold: float = 0.99
+    coverage_alpha_threshold: float = 0.85
     rgb_residual_threshold: float = 0.05
     min_candidate_depth_m: float = 0.1
     max_candidate_depth_m: float = 200.0
     candidate_duplicate_3d_threshold_m: float = 0.05
     confidence_thresholds: dict[str, float] | None = None
     residual_thresholds: dict[str, ResidualThreshold] | None = None
-    depth_policy: str = RAW_ACCUMULATED_DEPTH_POLICY
+    depth_policy: str = ALPHA_NORMALIZED_DEPTH_POLICY
     frame_bias_threshold: ResidualThreshold = ResidualThreshold(0.10, 0.02)
     frame_bias_min_overlap_px: int = 50
 
     def __post_init__(self) -> None:
-        if self.depth_policy != RAW_ACCUMULATED_DEPTH_POLICY:
-            raise ValueError(f"growth depth_policy must be {RAW_ACCUMULATED_DEPTH_POLICY}")
+        if self.depth_policy != ALPHA_NORMALIZED_DEPTH_POLICY:
+            raise ValueError(
+                "growth depth_policy must be "
+                f"{ALPHA_NORMALIZED_DEPTH_POLICY}"
+            )
         confidence = self.confidence_thresholds if self.confidence_thresholds is not None else {
             descriptor.name: descriptor.min_candidate_confidence
             for descriptor in SOURCE_DESCRIPTORS

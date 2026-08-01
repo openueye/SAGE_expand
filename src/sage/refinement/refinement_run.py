@@ -64,10 +64,7 @@ from .dense_geometry_prior import prepare_dense_priors
 APPEARANCE_RUN_SCHEMA = "sage-refinement-run-v1"
 _DENSE_PRIOR_PROGRESS_EVERY = 25
 _REFINEMENT_PROGRESS_EVERY = 500
-_GEOMETRY_AND_TOPOLOGY_TENSORS = (
-    "means3d",
-    "log_scales",
-    "rotations",
+_TOPOLOGY_TENSORS = (
     "gaussian_ids",
     "created_at",
     "source_types",
@@ -749,7 +746,13 @@ def run_appearance_refinement(
             source_payload,
             device=device,
         )
-        render_static = prepare_render_static(model)
+        optimizes_geometry = any(
+            name in refinement.optimized_parameters
+            for name in ("means3d", "log_scales", "rotations")
+        )
+        render_static = (
+            None if optimizes_geometry else prepare_render_static(model)
+        )
         dense_policy = DenseGeometryPolicy(
             dense_depth_weight=0.0,
             dense_normal_weight=1.0,
@@ -846,10 +849,10 @@ def run_appearance_refinement(
             progress_every=_REFINEMENT_PROGRESS_EVERY,
             progress_callback=report_refinement_progress,
         )
-        frozen_names = _GEOMETRY_AND_TOPOLOGY_TENSORS + (
-            ("opacity_logits",)
-            if "opacity_logits" not in refinement.optimized_parameters
-            else ()
+        frozen_names = _TOPOLOGY_TENSORS + tuple(
+            name
+            for name in TrainableGaussians.PARAMETER_NAMES
+            if name not in refinement.optimized_parameters
         )
         frozen_verification = verify_frozen_tensors(
             model,

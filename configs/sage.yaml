@@ -31,7 +31,7 @@ mapping:
   scale_clamp_min: 1e-4
   initial_scale_anisotropy: [0.95, 1.05, 1.20]
   growth:
-    coverage_alpha_threshold: 0.99
+    coverage_alpha_threshold: 0.85
     rgb_residual_threshold: 0.05
     min_candidate_depth_m: 0.1
     max_candidate_depth_m: 200.0
@@ -61,6 +61,9 @@ refinement:
   iterations: 8000
   color_learning_rate: 0.000625
   opacity_learning_rate: 0.0000625
+  means3d_learning_rate: 0.000016
+  log_scales_learning_rate: 0.0001
+  rotations_learning_rate: 0.0001
   opacity_anchor_weight: 0.1
   lidar_depth_weight: 0.268780155032039
   dense_normal_weight: 0.05

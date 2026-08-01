@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import torch
 
 from ..foundation.config import GaussianInitializationConfig, GrowthConfig
 from ..foundation.contracts import DepthEvidence, FrameInputs, GaussianAppendBatch, GrowthInputs, SourceType
 from .geometry import backproject_depth
-from .rendering import RenderOutput
+from .losses import alpha_normalized_depth
 from ..foundation.source_policy import SOURCE_DESCRIPTORS, descriptor_for_type, descriptors_for_types, source_policy_value
+
+if TYPE_CHECKING:
+    from .rendering import RenderOutput
 
 
 @dataclass(frozen=True)
@@ -115,7 +119,10 @@ class GrowthBuilder:
             confidence_valid = in_range & torch.isfinite(confidence) & (confidence >= confidence_threshold)
             _increment_rejection(source_stats, "below_confidence", int((in_range & ~confidence_valid).sum()))
             residual = source_policy_value(self.config.residual_thresholds, descriptor.name)
-            rendered_depth = rendered.accumulated_depth
+            rendered_depth = alpha_normalized_depth(
+                rendered.accumulated_depth,
+                rendered.alpha,
+            )
             rendered_depth_valid = torch.isfinite(rendered_depth) & (rendered_depth > 0)
             tolerance = torch.maximum(torch.full_like(depth, residual.absolute_m), residual.relative * depth)
             geometry_gate = rendered_depth_valid & valid & ((rendered_depth - depth).abs() > tolerance)

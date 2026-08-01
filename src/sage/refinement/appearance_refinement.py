@@ -220,7 +220,7 @@ class AppearanceExposureNuisance(torch.nn.Module):
 
 
 class AppearanceRefiner:
-    """Optimize configured appearance fields while freezing geometry and poses."""
+    """Optimize configured Gaussian fields while keeping topology and poses fixed."""
 
     def __init__(self, config: AppearanceRefinementConfig) -> None:
         self.config = config
@@ -270,20 +270,19 @@ class AppearanceRefiner:
             frame_indices[int(random.integers(0, len(frame_indices)))]
             for _ in range(self.config.iterations)
         )
-        baseline_colors = model.colors.detach().clone()
+        baseline_parameters = {
+            name: getattr(model, name).detach().clone()
+            for name in self.config.optimized_parameters
+        }
         baseline_opacities = model.opacities.detach().clone()
         original_requires_grad = {
             name: getattr(model, name).requires_grad
             for name in model.PARAMETER_NAMES
         }
-        learning_rates = {
-            "colors": self.config.color_learning_rate,
-            "opacity_logits": self.config.opacity_learning_rate,
-        }
         parameter_groups = [
                 {
                     "params": [getattr(model, name)],
-                    "lr": learning_rates[name],
+                    "lr": self.config.learning_rates[name],
                     "name": name,
                 }
                 for name in self.config.optimized_parameters
@@ -437,11 +436,27 @@ class AppearanceRefiner:
                         "step": step,
                         "gaussian_count": model.count,
                         "color_displacement": _distribution(
-                            (model.colors.detach() - baseline_colors)
+                            (
+                                model.colors.detach()
+                                - baseline_parameters["colors"]
+                            )
                             .abs()
                             .amax(dim=1)
                         ),
                     }
+                    geometry_metrics = {
+                        "means3d": "position_displacement_m",
+                        "log_scales": "log_scale_displacement",
+                        "rotations": "rotation_parameter_displacement",
+                    }
+                    for parameter_name, metric_name in geometry_metrics.items():
+                        if parameter_name in baseline_parameters:
+                            milestone[metric_name] = _distribution(
+                                (
+                                    getattr(model, parameter_name).detach()
+                                    - baseline_parameters[parameter_name]
+                                ).abs().amax(dim=1)
+                            )
                     if optimizes_opacity:
                         milestone["opacity_displacement"] = _distribution(
                             (

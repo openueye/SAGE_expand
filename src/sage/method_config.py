@@ -15,7 +15,6 @@ from .foundation.config import (
     FROZEN_MAPPING_LOSS_VARIANT,
     NATIVE_FULL_FRAME_PAD_CROP_V1,
     ODIN_GLOBAL_CURRENT_ANCHORED_VARIANT,
-    RAW_ACCUMULATED_DEPTH_POLICY,
     GaussianInitializationConfig,
     GrowthConfig,
     GrowthSourcesConfig,
@@ -62,6 +61,24 @@ def _section(
             f"SAGE {name} fields must be exactly: {', '.join(sorted(fields))}"
         )
     return value
+
+
+def _section_with_optional(
+    payload: dict[str, Any],
+    name: str,
+    required: set[str],
+    optional: set[str],
+) -> dict[str, Any]:
+    value = payload.get(name)
+    if (
+        not isinstance(value, dict)
+        or not required <= set(value) <= required | optional
+    ):
+        raise ValueError(
+            f"SAGE {name} must define: {', '.join(sorted(required))}; "
+            f"optional fields: {', '.join(sorted(optional))}"
+        )
+    return {**{field: 0.0 for field in optional}, **value}
 
 
 def _runtime_section(payload: dict[str, Any]) -> dict[str, Any]:
@@ -171,7 +188,7 @@ class SageMethodConfig:
                 "loss",
             },
         )
-        refinement = _section(
+        refinement = _section_with_optional(
             payload,
             "refinement",
             {
@@ -191,6 +208,11 @@ class SageMethodConfig:
                 "exposure_anchor_weight",
                 "ssim_weight",
                 "milestones",
+            },
+            {
+                "means3d_learning_rate",
+                "log_scales_learning_rate",
+                "rotations_learning_rate",
             },
         )
         evaluation = _section(
@@ -297,7 +319,7 @@ class SageMethodConfig:
                     name: ResidualThreshold(**threshold)
                     for name, threshold in residuals.items()
                 },
-                depth_policy=RAW_ACCUMULATED_DEPTH_POLICY,
+                depth_policy=ALPHA_NORMALIZED_DEPTH_POLICY,
             ),
             "pruning": PruningConfig(**pruning),
             "loss": MappingLossConfig(
@@ -405,6 +427,13 @@ class SageMethodConfig:
             sampling_variant=SEEDED_RANDOM_MAPPING_FRAME_VARIANT,
             color_learning_rate=self.refinement["color_learning_rate"],
             opacity_learning_rate=self.refinement["opacity_learning_rate"],
+            means3d_learning_rate=self.refinement["means3d_learning_rate"],
+            log_scales_learning_rate=(
+                self.refinement["log_scales_learning_rate"]
+            ),
+            rotations_learning_rate=(
+                self.refinement["rotations_learning_rate"]
+            ),
             opacity_anchor_weight=self.refinement["opacity_anchor_weight"],
             lidar_depth_weight=self.refinement["lidar_depth_weight"],
             dense_normal_weight=self.refinement["dense_normal_weight"],
