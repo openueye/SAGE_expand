@@ -22,6 +22,8 @@ on the first renderer invocation, so the first preflight or training run takes
 longer and requires the locked CUDA compiler toolchain. By default PyTorch
 targets the CUDA architectures of the GPUs visible during that first invocation;
 set `TORCH_CUDA_ARCH_LIST` before it if a fixed target architecture is required.
+The run receipt records both the active GPU compute capability and the raw
+`TORCH_CUDA_ARCH_LIST` value (`null` when it is unset).
 
 ## Models
 

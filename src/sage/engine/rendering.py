@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from pathlib import Path
 import sys
 import sysconfig
@@ -88,6 +89,7 @@ def capture_renderer_identity() -> dict[str, object]:
         "torch_version": str(torch.__version__),
         "cuda_version": torch.version.cuda,
         "compute_capability": f"{major}.{minor}",
+        "torch_cuda_arch_list": os.environ.get("TORCH_CUDA_ARCH_LIST"),
     }
 
 

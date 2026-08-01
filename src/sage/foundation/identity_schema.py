@@ -14,7 +14,7 @@ _DEPENDENCY_FIELDS = {
         "pip-package": {
             "kind", "package", "package_version", "extension_sha256",
             "adapter_schema", "python_soabi", "torch_version", "cuda_version",
-            "compute_capability",
+            "compute_capability", "torch_cuda_arch_list",
         },
     },
     "spnet": {

@@ -11,6 +11,7 @@ from sage.engine.rendering import (
     RenderStaticFields,
     _camera_matrices,
     alpha_normalize_render_output_depth,
+    capture_renderer_identity,
     prepare_render_static,
     render,
 )
@@ -88,6 +89,24 @@ def test_depth_normalization_compatibility_reexport() -> None:
 
 def test_legacy_repository_renderer_identity_is_rejected() -> None:
     assert set(_DEPENDENCY_FIELDS["renderer"]) == {"unavailable", "pip-package"}
+
+
+def test_renderer_identity_records_cuda_arch_build_input(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    extension = tmp_path / "gsplat.so"
+    extension.write_bytes(b"test extension")
+    monkeypatch.setattr("sage.engine.rendering._gsplat_package_path", lambda: tmp_path)
+    monkeypatch.setattr("sage.engine.rendering._gsplat_extension_path", lambda: extension)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda: (8, 9))
+
+    monkeypatch.delenv("TORCH_CUDA_ARCH_LIST", raising=False)
+    assert capture_renderer_identity()["torch_cuda_arch_list"] is None
+
+    monkeypatch.setenv("TORCH_CUDA_ARCH_LIST", "8.6;8.9")
+    assert capture_renderer_identity()["torch_cuda_arch_list"] == "8.6;8.9"
 
 
 def test_camera_matrices_use_world_to_camera_and_pinhole_intrinsics() -> None:
