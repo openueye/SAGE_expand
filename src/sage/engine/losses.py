@@ -262,3 +262,31 @@ def mapping_loss(
         "alpha_fused5_p10": fused5_alpha[1],
         "alpha_fused5_p50": fused5_alpha[2],
     }
+
+
+def mapping_training_loss(
+    rendered_rgb: torch.Tensor,
+    target_rgb: torch.Tensor,
+    rendered_depth: torch.Tensor,
+    target_mapping: MappingObservation,
+    *,
+    rendered_alpha: torch.Tensor,
+    policy: MappingLossConfig,
+    target_depth: torch.Tensor | None = None,
+    source_masks: dict[str, torch.Tensor] | None = None,
+    validate_rgb: bool = True,
+) -> torch.Tensor:
+    """Return only the differentiable mapping objective used by optimizer steps."""
+    total, _ = mapping_loss(
+        rendered_rgb,
+        target_rgb,
+        rendered_depth,
+        target_mapping,
+        rendered_alpha=rendered_alpha,
+        policy=policy,
+        target_depth=target_depth,
+        source_masks=source_masks,
+        include_diagnostics=False,
+        validate_rgb=validate_rgb,
+    )
+    return total
