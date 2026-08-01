@@ -15,11 +15,13 @@ git clone https://github.com/openueye/SAGE.git
 cd SAGE
 conda-lock install --name sage conda-lock.yml
 conda run -n sage python tools/install_locked_pip.py --environment sage
-conda run -n sage python tools/build_renderer.py
 ```
 
-The bundled renderer targets CUDA capability 8.9. Set
-`RENDERER_CUDA_ARCH_LIST` and rebuild it for another GPU architecture.
+SAGE uses the pinned `gsplat` package. Its CUDA extension is compiled and cached
+on the first renderer invocation, so the first preflight or training run takes
+longer and requires the locked CUDA compiler toolchain. By default PyTorch
+targets the CUDA architectures of the GPUs visible during that first invocation;
+set `TORCH_CUDA_ARCH_LIST` before it if a fixed target architecture is required.
 
 ## Models
 

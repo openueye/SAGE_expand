@@ -1,6 +1,9 @@
 # Local third-party dependencies
 
-`diff-gaussian-rasterization-w-depth` is a tracked source dependency with its upstream attribution.
+The Gaussian rasterizer is no longer vendored here: SAGE depends on the `gsplat` PyPI package
+(Apache-2.0, https://github.com/nerfstudio-project/gsplat) instead of a locally tracked source
+tree. See `pyproject.toml`, `environment.yml`, and `conda-lock.yml` for the
+pinned version and resolved artifact identity.
 
 `SPNet` is intentionally not tracked. Its upstream repository does not provide a licence granting
 redistribution, so each user must obtain and verify it locally at the locked revision:

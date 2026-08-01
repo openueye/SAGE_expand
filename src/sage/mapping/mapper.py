@@ -161,7 +161,7 @@ class MappingEngine:
         self.spnet_min_prune_age = pruning.spnet_min_prune_age
         self.device = torch.device(device)
         if renderer is None:
-            raise RuntimeError("Production mapping requires the vendored CUDA renderer")
+            raise RuntimeError("Production mapping requires the gsplat CUDA renderer")
         self.renderer = renderer
         self.metric_evaluator = metric_evaluator
         self.gaussian_initialization = gaussian_initialization
