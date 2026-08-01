@@ -49,6 +49,14 @@ class RenderStaticFields:
     background: torch.Tensor
 
 
+@dataclass(frozen=True)
+class RenderCameraFields:
+    """Per-frame camera tensors reused across optimization renders."""
+
+    view: torch.Tensor
+    intrinsics: torch.Tensor
+
+
 class Renderer(Protocol):
     def __call__(self, model: object, frame: FrameInputs) -> RenderOutput: ...
 
@@ -110,6 +118,14 @@ def _camera_matrices(
     return view.contiguous(), intrinsics
 
 
+def prepare_render_camera(
+    frame: FrameInputs,
+    device: torch.device | str,
+) -> RenderCameraFields:
+    view, intrinsics = _camera_matrices(frame, torch.device(device))
+    return RenderCameraFields(view, intrinsics)
+
+
 def prepare_render_static(model: TrainableGaussians) -> RenderStaticFields:
     """Prepare fields that stay frozen throughout appearance refinement."""
     if model.means3d.device.type != "cuda":
@@ -137,6 +153,7 @@ def render(
     frame: FrameInputs,
     *,
     static: RenderStaticFields | None = None,
+    camera: RenderCameraFields | None = None,
 ) -> RenderOutput:
     if model.means3d.device.type != "cuda":
         raise RuntimeError("gsplat renderer requires CUDA; CPU rendering is not supported")
@@ -157,7 +174,11 @@ def render(
         scales = static.scales
         rotations = static.rotations
         background = static.background
-    view, intrinsics = _camera_matrices(frame, device)
+    if camera is None:
+        camera = prepare_render_camera(frame, device)
+    elif camera.view.device != device or camera.intrinsics.device != device:
+        raise ValueError("Cached renderer camera must share the model device")
+    view, intrinsics = camera.view, camera.intrinsics
     colors, alphas, _meta = backend.rasterization(
         means=means3d, quats=rotations, scales=scales,
         opacities=model.opacities.squeeze(-1).contiguous(), colors=model.colors.contiguous(),
@@ -176,3 +197,31 @@ def render(
     alpha = alphas[0, ..., 0].clamp(0, 1)
     rgb = colors[0, ..., :3] + (1 - alpha[..., None]) * background
     return RenderOutput(rgb, colors[0, ..., 3], alpha)
+
+
+class CachedRenderer:
+    """Renderer adapter that owns immutable camera tensors for one scene run."""
+
+    def __init__(self) -> None:
+        self._cameras: dict[tuple[object, ...], RenderCameraFields] = {}
+
+    def __call__(
+        self,
+        model: TrainableGaussians,
+        frame: FrameInputs,
+        *,
+        static: RenderStaticFields | None = None,
+    ) -> RenderOutput:
+        device = model.means3d.device
+        key = (
+            str(device),
+            frame.index,
+            frame.timestamp_ns,
+            frame.intrinsics,
+            frame.pose,
+        )
+        camera = self._cameras.get(key)
+        if camera is None:
+            camera = prepare_render_camera(frame, device)
+            self._cameras[key] = camera
+        return render(model, frame, static=static, camera=camera)

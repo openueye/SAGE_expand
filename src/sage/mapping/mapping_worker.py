@@ -17,7 +17,7 @@ from ..data.frame_source import frame_source_for_config
 from ..data.providers.spnet import OnlineSPNetProvider, SPNetEvidenceProvider
 from ..engine.metrics import ImageMetricEvaluator
 from ..engine.model import TrainableGaussians
-from ..engine.rendering import capture_renderer_identity, render
+from ..engine.rendering import CachedRenderer, capture_renderer_identity
 from ..execution import (
     EXECUTION_CHILD_ENV,
     formal_train_command,
@@ -170,7 +170,9 @@ def train(
     torch.cuda.reset_peak_memory_stats(device)
     try:
         result = MappingEngine(
-            config.mapping, config.pruning, config.growth, device=device, renderer=render,
+            config.mapping, config.pruning, config.growth,
+            device=device,
+            renderer=CachedRenderer(),
             spnet_provider=spnet_provider, metric_evaluator=metric_evaluator,
             gaussian_initialization=config.gaussian_initialization, loss_policy=config.loss,
             seed=config.seed,

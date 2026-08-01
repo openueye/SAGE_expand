@@ -21,14 +21,15 @@ from ..data.providers.spnet_cache import (
     load_dense_spnet_cache,
 )
 from ..engine.losses import mapping_loss, photometric_loss
+from ..engine.geometry import is_mapping_frame
 from ..engine.metrics import ImageMetricEvaluator
 from ..engine.model import TrainableGaussians
 from ..engine.ply_export import write_gaussian_ply
 from ..engine.rendering import (
+    CachedRenderer,
     RenderOutput,
     capture_renderer_identity,
     prepare_render_static,
-    render,
 )
 from ..foundation.artifact_versions import (
     APPEARANCE_REFINEMENT_CHECKPOINT_VERSION,
@@ -97,11 +98,6 @@ def _report_count_progress(
         f"ETA {_format_duration(remaining)}",
         flush=True,
     )
-
-
-def is_mapping_frame(frame_index: int, *, map_every: int) -> bool:
-    """Return whether a source frame belongs to the frozen mapping cohort."""
-    return frame_index == 0 or (frame_index + 1) % map_every == 0
 
 
 def preflight_appearance_runtime(
@@ -585,6 +581,7 @@ def run_appearance_refinement(
         render_static = (
             None if optimizes_geometry else prepare_render_static(model)
         )
+        renderer = CachedRenderer()
         dense_policy = DenseGeometryPolicy(
             dense_depth_weight=0.0,
             dense_normal_weight=1.0,
@@ -633,7 +630,7 @@ def run_appearance_refinement(
             _step: int,
         ) -> torch.Tensor | AppearanceObjective:
             frame = frame_by_index[frame_index]
-            output = render(item, frame, static=render_static)
+            output = renderer(item, frame, static=render_static)
             photometric_rgb = (
                 exposure_nuisance.apply(output.rgb, frame_index)
                 if exposure_nuisance is not None

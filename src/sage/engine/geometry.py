@@ -6,6 +6,11 @@ import torch
 from ..foundation.contracts import CameraIntrinsics, Pose
 
 
+def is_mapping_frame(frame_index: int, *, map_every: int) -> bool:
+    """Return whether an accepted source frame belongs to the mapping cohort."""
+    return frame_index == 0 or (frame_index + 1) % map_every == 0
+
+
 def rotation_wc(pose: Pose, *, device: torch.device | str = "cpu") -> torch.Tensor:
     quaternion = torch.tensor([pose.qx, pose.qy, pose.qz, pose.qw], dtype=torch.float32, device=device)
     quaternion = quaternion / torch.linalg.vector_norm(quaternion)

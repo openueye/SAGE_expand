@@ -7,10 +7,12 @@ import torch
 
 from sage.engine.model import TrainableGaussians
 from sage.engine.rendering import (
+    CachedRenderer,
     RenderOutput,
     RenderStaticFields,
     _camera_matrices,
     capture_renderer_identity,
+    prepare_render_camera,
     prepare_render_static,
     render,
 )
@@ -98,6 +100,7 @@ def test_renderer_identity_records_cuda_arch_build_input(
 
 def test_camera_matrices_use_world_to_camera_and_pinhole_intrinsics() -> None:
     view, intrinsics = _camera_matrices(_frame(), torch.device("cpu"))
+    cached = prepare_render_camera(_frame(), torch.device("cpu"))
 
     torch.testing.assert_close(
         view,
@@ -116,6 +119,8 @@ def test_camera_matrices_use_world_to_camera_and_pinhole_intrinsics() -> None:
             [0.0, 0.0, 1.0],
         ]),
     )
+    torch.testing.assert_close(cached.view, view)
+    torch.testing.assert_close(cached.intrinsics, intrinsics)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="gsplat requires CUDA")
@@ -143,6 +148,13 @@ def test_render_and_static_render_gradient_partition() -> None:
         assert model.opacity_logits.grad is not None
         for name in ("means3d", "log_scales", "rotations"):
             assert (getattr(model, name).grad is not None) is expect_geometry_gradient
+
+    cached_renderer = CachedRenderer()
+    cached = cached_renderer(model, frame)
+    direct = render(model, frame)
+    torch.testing.assert_close(cached.rgb, direct.rgb)
+    torch.testing.assert_close(cached.depth, direct.depth)
+    torch.testing.assert_close(cached.alpha, direct.alpha)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="gsplat requires CUDA")

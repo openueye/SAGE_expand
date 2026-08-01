@@ -13,6 +13,7 @@ from ..data.providers.spnet import SPNetEvidenceProvider
 from ..data.providers.spnet_cache import DenseSPNetFrame
 from ..engine.geometry import (
     build_optimization_schedule,
+    is_mapping_frame,
     select_current_anchored_global_views,
 )
 from ..engine.growth import GrowthBuilder
@@ -29,10 +30,6 @@ from ..foundation.config import (
 )
 from ..foundation.contracts import FrameInputs, SourceType
 from ..foundation.source_policy import SOURCE_DESCRIPTORS, descriptor_for_type, descriptors_for_types, opacity_keep_mask, source_counts
-
-
-def is_mapping_frame(frame_index: int, *, map_every: int) -> bool:
-    return frame_index == 0 or (frame_index + 1) % map_every == 0
 
 
 def should_invoke_spnet(
