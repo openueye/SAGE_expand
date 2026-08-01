@@ -68,12 +68,18 @@ Training runs mapping, appearance refinement, and final evaluation in order:
 
 ```text
 outputs/sage/
-├── structure/{checkpoint.pt, map.ply, run_manifest.json}
+├── structure/{checkpoint.pt, map.ply, spnet_dense.pt, run_manifest.json}
 ├── structure.execution.json
 ├── final/{appearance_checkpoint.pt, appearance_map.ply, run_manifest.json}
 ├── evaluation/{evaluation.json, run_manifest.json}
 └── run_manifest.json
 ```
+
+`structure/spnet_dense.pt` is an identity- and manifest-hash-bound cache of
+dense SPNet predictions already computed during mapping. Appearance refinement
+reuses those predictions and runs SPNet online only for mapping frames absent
+from the cache (normally the bootstrap frame). Older valid structure outputs
+without this optional cache remain resumable and fall back to online inference.
 
 Use `sage evaluate --checkpoint outputs/sage/final/appearance_checkpoint.pt`
 with the same input choice to publish a separate evaluation output. Existing

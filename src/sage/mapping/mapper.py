@@ -10,6 +10,7 @@ import numpy as np
 import torch
 
 from ..data.providers.spnet import SPNetEvidenceProvider
+from ..data.providers.spnet_cache import DenseSPNetFrame
 from ..engine.geometry import (
     build_optimization_schedule,
     select_current_anchored_global_views,
@@ -138,6 +139,7 @@ class MappingRun:
     optimizer_append_migrations: int = 0
     optimizer_prune_migrations: int = 0
     spnet_anchor_source_types: tuple[str, ...] = ()
+    dense_spnet_frames: tuple[DenseSPNetFrame, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -262,6 +264,7 @@ class MappingEngine:
         actual_spnet_invocations = 0
         spnet_inference_seconds: list[float] = []
         spnet_anchor_source_types: set[str] = set()
+        dense_spnet_frames: list[DenseSPNetFrame] = []
         processed_frames = 0
         commit_ordinal_by_frame_index: dict[int, int] = {}
         for frame in chain((first_frame,), frame_iterator):
@@ -316,7 +319,13 @@ class MappingEngine:
                         if self.device.type == "cuda":
                             torch.cuda.synchronize(self.device)
                         provider_started = perf_counter()
-                        provider_evidence = self.spnet_provider.evidence_for(frame)
+                        evidence_bundle = self.spnet_provider.evidence_bundle_for(frame)
+                        provider_evidence = evidence_bundle.growth_evidence
+                        dense_spnet_frames.append(DenseSPNetFrame(
+                            frame.index,
+                            frame.stem,
+                            evidence_bundle.dense_evidence.depth_m.copy(),
+                        ))
                         if self.device.type == "cuda":
                             torch.cuda.synchronize(self.device)
                         spnet_inference_elapsed = perf_counter() - provider_started
@@ -545,6 +554,7 @@ class MappingEngine:
             optimizer_append_migrations=optimizer_append_migrations,
             optimizer_prune_migrations=optimizer_prune_migrations,
             spnet_anchor_source_types=tuple(sorted(spnet_anchor_source_types)),
+            dense_spnet_frames=tuple(dense_spnet_frames),
         )
 
     @staticmethod

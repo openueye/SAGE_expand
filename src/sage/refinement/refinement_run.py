@@ -15,6 +15,11 @@ import torch
 from ..artifacts import load_checkpoint
 from ..data.frame_source import frame_source_for_config
 from ..data.providers.spnet import OnlineSPNetProvider
+from ..data.providers.spnet_cache import (
+    DenseSPNetCache,
+    ReusingDenseSPNetProvider,
+    load_dense_spnet_cache,
+)
 from ..engine.losses import mapping_loss, photometric_loss
 from ..engine.metrics import ImageMetricEvaluator
 from ..engine.model import TrainableGaussians
@@ -234,6 +239,7 @@ def _dense_prior_record(
     provider_identity: dict[str, object],
     alignment_variant: str | None = None,
     max_relative_depth_jump: float | None = None,
+    prediction_cache: dict[str, object] | None = None,
 ) -> dict[str, object]:
     frame_indices = [frame.index for frame in frames]
     if set(priors) != set(frame_indices):
@@ -285,10 +291,13 @@ def _dense_prior_record(
                 "max_relative_depth_jump": max_relative_depth_jump,
             })
         records.append(record)
-    return {
+    payload = {
         "provider_identity": deepcopy(provider_identity),
         "frames": records,
     }
+    if prediction_cache is not None:
+        payload["prediction_cache"] = deepcopy(prediction_cache)
+    return payload
 
 
 def _valid_sha256(value: object) -> bool:
@@ -402,6 +411,50 @@ def _consume_mapping_frames(
         raise
 
 
+def _load_mapping_dense_cache(
+    source_checkpoint: Path,
+    *,
+    source_checkpoint_sha256: str,
+) -> tuple[DenseSPNetCache, dict[str, object]] | None:
+    """Load a structure-stage prediction cache only through its manifest hash."""
+    manifest_path = source_checkpoint.with_name("run_manifest.json")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Cannot read structure manifest: {manifest_path}") from exc
+    artifacts = manifest.get("artifacts") if isinstance(manifest, dict) else None
+    checkpoint_record = artifacts.get("checkpoint") if isinstance(artifacts, dict) else None
+    if (
+        not isinstance(checkpoint_record, dict)
+        or checkpoint_record.get("sha256") != source_checkpoint_sha256
+    ):
+        raise ValueError("Structure manifest does not bind the source checkpoint")
+    cache_record = artifacts.get("dense_spnet_cache")
+    if cache_record is None:
+        return None
+    if (
+        not isinstance(cache_record, dict)
+        or set(cache_record) != {"path", "sha256", "frame_count"}
+        or cache_record.get("path") != "spnet_dense.pt"
+        or type(cache_record.get("frame_count")) is not int
+        or cache_record["frame_count"] < 1
+        or not _valid_sha256(cache_record.get("sha256"))
+    ):
+        raise ValueError("Structure dense SPNet cache manifest is invalid")
+    cache_path = source_checkpoint.with_name("spnet_dense.pt")
+    if not cache_path.is_file() or sha256_file(cache_path) != cache_record["sha256"]:
+        raise ValueError("Structure dense SPNet cache hash does not match")
+    cache = load_dense_spnet_cache(cache_path)
+    if len(cache.frames) != cache_record["frame_count"]:
+        raise ValueError("Structure dense SPNet cache frame count does not match")
+    return cache, {
+        "schema_version": "sage-dense-spnet-reuse-v1",
+        "source_manifest_sha256": sha256_file(manifest_path),
+        "cache_sha256": cache_record["sha256"],
+        "cached_frame_indices": [frame.frame_index for frame in cache.frames],
+    }
+
+
 def run_appearance_refinement(
     config: SageConfig,
     checkpoint: Path,
@@ -453,6 +506,15 @@ def run_appearance_refinement(
             device=device,
             model_root=config.model_root,
         )
+        cache_result = _load_mapping_dense_cache(
+            source_checkpoint,
+            source_checkpoint_sha256=source_sha256,
+        )
+        dense_provider = provider
+        cache_provenance = None
+        if cache_result is not None:
+            dense_cache, cache_provenance = cache_result
+            dense_provider = ReusingDenseSPNetProvider(dense_cache, provider)
         dense_prior_started = perf_counter()
 
         def report_dense_prior(
@@ -477,20 +539,31 @@ def run_appearance_refinement(
         )
         dense_priors = prepare_dense_priors(
             mapping_frames,
-            provider,
+            dense_provider,
             refinement.dense_prior,
             progress_callback=report_dense_prior,
         )
+        dense_prior_seconds = perf_counter() - dense_prior_started
         dense_prior_provenance = _dense_prior_record(
             mapping_frames,
             dense_priors,
-            provider_identity=provider.identity.payload(),
+            provider_identity=dense_provider.identity.payload(),
             alignment_variant=refinement.dense_prior.alignment_variant,
             max_relative_depth_jump=(
                 refinement.dense_normal_max_relative_depth_jump
             ),
+            prediction_cache=(
+                {
+                    **cache_provenance,
+                    "reused_frames": dense_provider.reused_frames,
+                    "live_frames": dense_provider.live_frames,
+                }
+                if isinstance(dense_provider, ReusingDenseSPNetProvider)
+                and cache_provenance is not None
+                else None
+            ),
         )
-        del provider
+        del dense_provider, provider
         torch.cuda.empty_cache()
         frame_by_index = {
             frame.index: frame
@@ -608,6 +681,7 @@ def run_appearance_refinement(
             progress_every=_REFINEMENT_PROGRESS_EVERY,
             progress_callback=report_refinement_progress,
         )
+        optimization_seconds = perf_counter() - refinement_started
         frozen_names = _TOPOLOGY_TENSORS + tuple(
             name
             for name in TrainableGaussians.PARAMETER_NAMES
@@ -670,6 +744,10 @@ def run_appearance_refinement(
             "frozen_tensor_verification": frozen_verification,
             "completion_receipts": {"training_frames": training_receipt},
             "duration_seconds": perf_counter() - started,
+            "timings": {
+                "dense_prior_seconds": dense_prior_seconds,
+                "optimization_seconds": optimization_seconds,
+            },
             "artifacts": {
                 "checkpoint": "appearance_checkpoint.pt",
                 "checkpoint_sha256": sha256_file(checkpoint_path),
