@@ -28,7 +28,7 @@ from ..foundation.config import (
     MappingLossConfig,
     PruningConfig,
 )
-from ..foundation.contracts import FrameInputs, SourceType
+from ..foundation.contracts import DepthEvidence, FrameInputs, SourceType
 from ..foundation.source_policy import SOURCE_DESCRIPTORS, descriptor_for_type, descriptors_for_types, opacity_keep_mask, source_counts
 
 
@@ -55,6 +55,22 @@ def expected_spnet_invocations(
             mapping,
         )
         for frame_index in range(processed_frames)
+    )
+
+
+def mapping_spnet_evidence(
+    provider: SPNetEvidenceProvider,
+    frame: FrameInputs,
+) -> tuple[DepthEvidence | None, DenseSPNetFrame | None]:
+    """Use bundled dense evidence when supported, preserving legacy providers."""
+    bundle_for = getattr(provider, "evidence_bundle_for", None)
+    if bundle_for is None:
+        return provider.evidence_for(frame), None
+    bundle = bundle_for(frame)
+    return bundle.growth_evidence, DenseSPNetFrame(
+        frame.index,
+        frame.stem,
+        bundle.dense_evidence.depth_m.copy(),
     )
 
 
@@ -316,13 +332,12 @@ class MappingEngine:
                         if self.device.type == "cuda":
                             torch.cuda.synchronize(self.device)
                         provider_started = perf_counter()
-                        evidence_bundle = self.spnet_provider.evidence_bundle_for(frame)
-                        provider_evidence = evidence_bundle.growth_evidence
-                        dense_spnet_frames.append(DenseSPNetFrame(
-                            frame.index,
-                            frame.stem,
-                            evidence_bundle.dense_evidence.depth_m.copy(),
-                        ))
+                        provider_evidence, dense_spnet_frame = mapping_spnet_evidence(
+                            self.spnet_provider,
+                            frame,
+                        )
+                        if dense_spnet_frame is not None:
+                            dense_spnet_frames.append(dense_spnet_frame)
                         if self.device.type == "cuda":
                             torch.cuda.synchronize(self.device)
                         spnet_inference_elapsed = perf_counter() - provider_started

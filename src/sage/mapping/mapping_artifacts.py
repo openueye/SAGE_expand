@@ -87,7 +87,7 @@ def _checkpoint_payload(
 
 
 def _validate_run(run: MappingRun) -> None:
-    if len(run.dense_spnet_frames) != run.spnet_actual_invocations:
+    if len(run.dense_spnet_frames) not in {0, run.spnet_actual_invocations}:
         raise ValueError("Dense SPNet cache count must match mapping invocations")
     previous = None
     for commit in run.commits:

@@ -355,8 +355,6 @@ class SPNetEvidenceProvider(Protocol):
 
     def evidence_for(self, frame: FrameInputs) -> DepthEvidence | None: ...
 
-    def evidence_bundle_for(self, frame: FrameInputs) -> "SPNetEvidenceBundle": ...
-
 
 class SPNetPredictor(Protocol):
     def __call__(

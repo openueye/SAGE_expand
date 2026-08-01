@@ -416,6 +416,8 @@ def _load_mapping_dense_cache(
     manifest_path = source_checkpoint.with_name("run_manifest.json")
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
     except (OSError, json.JSONDecodeError) as exc:
         raise ValueError(f"Cannot read structure manifest: {manifest_path}") from exc
     artifacts = manifest.get("artifacts") if isinstance(manifest, dict) else None

@@ -192,6 +192,24 @@ def edge_weights(
     )
 
 
+def _center_edge_weights(target_rgb: torch.Tensor, gamma: float) -> torch.Tensor:
+    """Compute only the center attenuation consumed by normal refinement."""
+    gray = target_rgb.detach().mean(dim=2)
+    horizontal_gradient = (gray[:, 1:] - gray[:, :-1]).abs()
+    vertical_gradient = (gray[1:, :] - gray[:-1, :]).abs()
+    center_gradient = torch.maximum(
+        torch.maximum(
+            F.pad(horizontal_gradient, (1, 0)),
+            F.pad(horizontal_gradient, (0, 1)),
+        ),
+        torch.maximum(
+            F.pad(vertical_gradient, (0, 0, 1, 0)),
+            F.pad(vertical_gradient, (0, 0, 0, 1)),
+        ),
+    )
+    return torch.exp(-gamma * center_gradient)
+
+
 def dense_prior_support_counts(
     prior: DenseGeometryPrior,
     intrinsics: CameraIntrinsics,
@@ -283,7 +301,7 @@ def prepare_dense_normal_static(
         intrinsics,
         max_relative_depth_jump=geometry.max_relative_depth_jump,
     )
-    center_weight, _, _ = edge_weights(rgb, geometry.edge_weight_gamma)
+    center_weight = _center_edge_weights(rgb, geometry.edge_weight_gamma)
     return DenseNormalStatic(
         weights=weights,
         prior_valid=prior_valid,

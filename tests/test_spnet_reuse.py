@@ -26,6 +26,8 @@ from sage.foundation.contracts import (
     SourceType,
 )
 from sage.foundation.hashing import sha256_file
+from sage.mapping.mapper import MappingRun, mapping_spnet_evidence
+from sage.mapping.mapping_artifacts import _validate_run
 from sage.refinement.refinement_run import _load_mapping_dense_cache
 
 
@@ -143,6 +145,44 @@ class _FallbackProvider:
         )
 
 
+class _LegacyMappingProvider:
+    def __init__(self) -> None:
+        self.identity = _identity()
+        self.calls = 0
+
+    def evidence_for(self, frame: FrameInputs) -> DepthEvidence:
+        self.calls += 1
+        depth = np.full(frame.rgb.shape[:2], 7.0, dtype=np.float32)
+        valid = np.ones_like(depth, dtype=np.bool_)
+        return DepthEvidence(
+            SourceType.SPNET_BLIND,
+            depth,
+            valid,
+            np.full_like(depth, 0.4),
+        )
+
+
+def test_mapping_preserves_legacy_spnet_provider_contract() -> None:
+    provider = _LegacyMappingProvider()
+
+    evidence, dense_frame = mapping_spnet_evidence(provider, _frame())
+
+    assert provider.calls == 1
+    assert evidence.source_type == SourceType.SPNET_BLIND
+    assert dense_frame is None
+
+
+def test_mapping_artifacts_allow_legacy_provider_without_dense_cache() -> None:
+    _validate_run(MappingRun(
+        model=object(),
+        commits=(),
+        processed_frames=1,
+        duration_seconds=1.0,
+        fps=1.0,
+        spnet_actual_invocations=1,
+    ))
+
+
 def test_dense_spnet_cache_round_trip_reuses_cached_frames(tmp_path) -> None:
     frame = _frame()
     cached_depth = np.full(frame.rgb.shape[:2], 5.0, dtype=np.float32)
@@ -219,3 +259,13 @@ def test_refinement_loads_dense_cache_only_through_structure_manifest(tmp_path) 
             checkpoint,
             source_checkpoint_sha256=sha256_file(checkpoint),
         )
+
+
+def test_refinement_without_structure_manifest_falls_back_online(tmp_path) -> None:
+    checkpoint = tmp_path / "checkpoint.pt"
+    checkpoint.write_bytes(b"checkpoint")
+
+    assert _load_mapping_dense_cache(
+        checkpoint,
+        source_checkpoint_sha256=sha256_file(checkpoint),
+    ) is None
