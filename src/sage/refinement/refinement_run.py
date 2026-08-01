@@ -49,9 +49,10 @@ from .appearance_refinement import (
 )
 from .dense_geometry_config import DenseGeometryPolicy
 from .dense_geometry_objective import (
-    dense_geometry_objective,
+    DenseNormalStatic,
+    dense_normal_objective,
     dense_prior_support_counts,
-    prepare_dense_geometry_static,
+    prepare_dense_normal_static,
 )
 from .dense_geometry_prior import prepare_dense_priors
 
@@ -163,11 +164,11 @@ def _appearance_objective_from_render(
     frame: FrameInputs,
     refinement: AppearanceRefinementConfig,
     loss_policy: MappingLossConfig,
-    dense_prior: DenseGeometryPrior | None = None,
     *,
+    dense_policy: DenseGeometryPolicy,
     photometric_rgb: torch.Tensor | None = None,
-    cached: dict[str, object] | None = None,
-) -> torch.Tensor | AppearanceObjective:
+    cached: dict[str, object],
+) -> AppearanceObjective:
     optimized_rgb = (
         output.rgb if photometric_rgb is None else photometric_rgb
     )
@@ -175,15 +176,7 @@ def _appearance_objective_from_render(
         raise ValueError(
             "Photometric RGB must match the native render shape"
         )
-    target = (
-        cached["target_rgb"]
-        if cached is not None
-        else torch.as_tensor(
-            frame.rgb,
-            dtype=optimized_rgb.dtype,
-            device=optimized_rgb.device,
-        )
-    )
+    target = cached["target_rgb"]
     if not isinstance(target, torch.Tensor):
         raise ValueError("Cached appearance RGB target is invalid")
     photo, _, _ = photometric_loss(
@@ -198,16 +191,8 @@ def _appearance_objective_from_render(
         frame.mapping,
         rendered_alpha=output.alpha,
         policy=loss_policy,
-        target_depth=(
-            cached.get("target_depth")
-            if cached is not None
-            else None
-        ),
-        source_masks=(
-            cached.get("source_masks")
-            if cached is not None
-            else None
-        ),
+        target_depth=cached.get("target_depth"),
+        source_masks=cached.get("source_masks"),
         include_image=False,
         include_diagnostics=False,
         validate_rgb=False,
@@ -218,40 +203,22 @@ def _appearance_objective_from_render(
         "lidar_depth": lidar_depth,
     }
     total = photo + refinement.lidar_depth_weight * lidar_depth
-    if dense_prior is None:
-        raise ValueError(
-            "SAGE objective requires an aligned dense prior"
-        )
-    dense_policy = DenseGeometryPolicy(
-        dense_depth_weight=0.0,
-        dense_normal_weight=1.0,
-        normal_smoothness_weight=0.0,
-        edge_weight_gamma=refinement.dense_normal_edge_weight_gamma,
-        alpha_support_a0=refinement.dense_normal_alpha_support_a0,
-        max_relative_depth_jump=(
-            refinement.dense_normal_max_relative_depth_jump
-        ),
-    )
-    _, dense_terms = dense_geometry_objective(
+    dense_static = cached.get("dense_normal_static")
+    if not isinstance(dense_static, DenseNormalStatic):
+        raise ValueError("Cached dense-normal target is invalid")
+    dense_result = dense_normal_objective(
         output.accumulated_depth,
         output.alpha,
-        dense_prior,
-        target,
         frame.intrinsics,
-        refinement.dense_prior,
         dense_policy,
-        static=(
-            cached.get("dense_static")
-            if cached is not None
-            else None
-        ),
+        dense_static,
     )
-    dense_normal = dense_terms["normal"]
+    dense_normal = dense_result.loss
     terms["dense_normal"] = dense_normal
     total = total + refinement.dense_normal_weight * dense_normal
     diagnostics = {
-        "dense_valid_normal_pixels": dense_terms["valid_normal_pixels"],
-        "dense_normal_weight_mass": dense_terms["normal_weight_mass"],
+        "dense_valid_normal_pixels": dense_result.valid_pixels,
+        "dense_normal_weight_mass": dense_result.weight_mass,
     }
     return AppearanceObjective(
         total=total,
@@ -578,7 +545,7 @@ def run_appearance_refinement(
                     "center": (source_types == 0) | (source_types == 3),
                     "fused5": (source_types == 1) | (source_types == 4),
                 },
-                "dense_static": prepare_dense_geometry_static(
+                "dense_normal_static": prepare_dense_normal_static(
                     dense_priors[frame.index],
                     target_rgb,
                     frame.intrinsics,
@@ -604,7 +571,7 @@ def run_appearance_refinement(
                 frame,
                 refinement,
                 config.loss,
-                dense_priors.get(frame_index),
+                dense_policy=dense_policy,
                 photometric_rgb=photometric_rgb,
                 cached=appearance_cache[frame_index],
             )
