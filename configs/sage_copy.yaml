@@ -5,8 +5,8 @@ runtime:
   require_clean_worktree: false
 
 input:
-  resize_width: 800
-  resize_height: 648
+  resize_width: 1600
+  resize_height: 1296
   stream_queue_size: 1
 
 spnet:
