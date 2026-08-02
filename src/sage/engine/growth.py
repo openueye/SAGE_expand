@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from itertools import product
 from typing import TYPE_CHECKING
 
 import torch
@@ -15,8 +16,28 @@ if TYPE_CHECKING:
     from .rendering import RenderOutput
 
 
+_SPATIAL_DEDUP_NEIGHBOR_OFFSETS = torch.tensor(
+    tuple(product((-1, 0, 1), repeat=3)), dtype=torch.int64,
+)
+_SPATIAL_DEDUP_QUERY_CHUNK = 65536
+_REJECTION_REASONS = frozenset({
+    "frame_bias",
+    "depth_out_of_range",
+    "below_confidence",
+    "rgb_residual_suppressed",
+    "rendered_rgb_invalid",
+    "gate_blocked",
+    "duplicate_2d",
+    "duplicate_3d",
+    "duplicate_3d_existing",
+    "quota_exhausted",
+})
+
+
 @dataclass(frozen=True)
 class GrowthStats:
+    """Per-source growth accounting with mutually exclusive rejection buckets."""
+
     by_source: dict[str, dict[str, object]]
 
 
@@ -32,6 +53,7 @@ class FrameNeeds:
     target_rgb: torch.Tensor
     coverage: torch.Tensor          # alpha 不足且 RGB 无法解释 —— 需要补面
     low_alpha: torch.Tensor         # 仅 alpha 不足，coverage 的上界，用于归因
+    rendered_rgb_valid: torch.Tensor
     rendered_depth: torch.Tensor    # alpha 归一化深度
     rendered_depth_valid: torch.Tensor
 
@@ -40,6 +62,100 @@ class FrameNeeds:
 class GrowthResult:
     batch: GaussianAppendBatch
     stats: GrowthStats
+
+
+def _spatially_blocked(
+    query_points: torch.Tensor,
+    reference_points: torch.Tensor,
+    threshold_m: float,
+    *,
+    prior_query_only: bool = False,
+) -> torch.Tensor:
+    """Return queries within ``threshold_m`` of a reference point.
+
+    A voxel grid only narrows the search. The final Euclidean distance check
+    avoids both false positives inside one voxel and false negatives across a
+    voxel boundary. ``prior_query_only`` makes the reference set the same
+    candidate array while retaining only earlier candidates, preserving the
+    explicit source-priority order supplied by the caller.
+    """
+    query_count = int(query_points.shape[0])
+    reference_count = int(reference_points.shape[0])
+    blocked = torch.zeros(query_count, dtype=torch.bool, device=query_points.device)
+    if query_count == 0 or reference_count == 0:
+        return blocked
+
+    query_voxels = torch.floor(query_points / threshold_m).to(torch.int64)
+    reference_voxels = torch.floor(reference_points / threshold_m).to(torch.int64)
+    offsets = _SPATIAL_DEDUP_NEIGHBOR_OFFSETS.to(device=query_points.device)
+    threshold_squared = threshold_m * threshold_m
+
+    for start in range(0, query_count, _SPATIAL_DEDUP_QUERY_CHUNK):
+        end = min(start + _SPATIAL_DEDUP_QUERY_CHUNK, query_count)
+        query_voxels_chunk = query_voxels[start:end]
+        neighbor_voxels = (
+            query_voxels_chunk[:, None, :] + offsets[None, :, :]
+        ).reshape(-1, 3)
+        all_voxels = torch.cat((reference_voxels, neighbor_voxels), dim=0)
+        _, inverse = torch.unique(all_voxels, dim=0, return_inverse=True)
+        reference_cell_ids = inverse[:reference_count]
+        neighbor_cell_ids = inverse[reference_count:].reshape(end - start, -1)
+
+        cell_counts = torch.bincount(
+            reference_cell_ids,
+            minlength=int(inverse.max()) + 1,
+        )
+        neighbor_counts = cell_counts[neighbor_cell_ids.reshape(-1)]
+        if not bool((neighbor_counts > 0).any()):
+            continue
+
+        reference_order = torch.argsort(reference_cell_ids)
+        cell_offsets = torch.cat((
+            torch.zeros(1, dtype=torch.int64, device=query_points.device),
+            torch.cumsum(cell_counts, dim=0),
+        ))
+        neighbor_starts = cell_offsets[neighbor_cell_ids.reshape(-1)]
+        pair_neighbor_ids = torch.repeat_interleave(
+            torch.arange(neighbor_cell_ids.numel(), device=query_points.device),
+            neighbor_counts,
+        )
+        if pair_neighbor_ids.numel() == 0:
+            continue
+        pair_starts = torch.repeat_interleave(neighbor_starts, neighbor_counts)
+        local_offsets = (
+            torch.arange(pair_neighbor_ids.numel(), device=query_points.device)
+            - torch.repeat_interleave(
+                torch.cumsum(neighbor_counts, dim=0) - neighbor_counts,
+                neighbor_counts,
+            )
+        )
+        reference_indices = reference_order[pair_starts + local_offsets]
+        query_indices = pair_neighbor_ids // neighbor_cell_ids.shape[1]
+        if prior_query_only:
+            valid_pairs = reference_indices < (query_indices + start)
+        else:
+            valid_pairs = torch.ones_like(reference_indices, dtype=torch.bool)
+        if not bool(valid_pairs.any()):
+            continue
+        query_indices = query_indices[valid_pairs]
+        reference_indices = reference_indices[valid_pairs]
+        distances_squared = (
+            query_points[start + query_indices] - reference_points[reference_indices]
+        ).square().sum(dim=1)
+        hits = distances_squared <= threshold_squared
+        if bool(hits.any()):
+            blocked_chunk = torch.zeros(
+                end - start, dtype=torch.uint8, device=query_points.device,
+            )
+            blocked_chunk.scatter_reduce_(
+                0,
+                query_indices[hits],
+                torch.ones_like(query_indices[hits], dtype=torch.uint8),
+                reduce="amax",
+                include_self=True,
+            )
+            blocked[start:end] = blocked_chunk.to(torch.bool)
+    return blocked
 
 
 def _empty_batch(device: torch.device) -> GaussianAppendBatch:
@@ -55,6 +171,8 @@ def _empty_batch(device: torch.device) -> GaussianAppendBatch:
 
 
 def _increment_rejection(stats: dict[str, object], reason: str, count: int) -> None:
+    if reason not in _REJECTION_REASONS:
+        raise ValueError(f"Unknown growth rejection reason: {reason}")
     if count:
         reasons = stats["rejection_reasons"]
         assert isinstance(reasons, dict)
@@ -87,11 +205,13 @@ class GrowthBuilder:
         rgb_residual = (rendered.rgb - target_rgb).abs().mean(dim=-1)
         rendered_depth = alpha_normalized_depth(rendered.accumulated_depth, rendered.alpha)
         low_alpha = torch.isfinite(rendered.alpha) & (rendered.alpha < self.config.coverage_alpha_threshold)
-        rgb_unexplained = torch.isfinite(rendered.rgb).all(dim=-1) & (rgb_residual > self.config.rgb_residual_threshold)
+        rendered_rgb_valid = torch.isfinite(rendered.rgb).all(dim=-1)
+        rgb_unexplained = rendered_rgb_valid & (rgb_residual > self.config.rgb_residual_threshold)
         return FrameNeeds(
             target_rgb=target_rgb,
             coverage=low_alpha & rgb_unexplained,
             low_alpha=low_alpha,
+            rendered_rgb_valid=rendered_rgb_valid,
             rendered_depth=rendered_depth,
             rendered_depth_valid=torch.isfinite(rendered_depth) & (rendered_depth > 0),
         )
@@ -109,17 +229,28 @@ class GrowthBuilder:
         return needs.rendered_depth_valid & valid & ((needs.rendered_depth - depth).abs() > tolerance)
 
     @staticmethod
+    def _select_quota_rows(rows: torch.Tensor, quota: int) -> torch.Tensor:
+        """Select rows with the registered deterministic raster-uniform policy."""
+        if int(rows.numel()) <= quota:
+            return rows
+        if quota == 0:
+            return rows[:0]
+        return rows[torch.linspace(
+            0, int(rows.numel()) - 1, quota, device=rows.device,
+        ).long()]
+
+    @staticmethod
     def _arbitrate_2d(
         gated: dict[int, tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
         descriptors: tuple,
         stats: dict[str, dict[str, object]],
-    ) -> dict[int, torch.Tensor]:
+    ) -> tuple[tuple[SourceType, torch.Tensor], ...]:
         """L2：同一像素只允许一个源播种，按显式声明的优先级裁决。
 
         优先级来自 descriptor.priority，不再是"谁先被循环到谁占坑"的副作用；
-        返回的字典也按优先级排序，使下游 3D 去重的"先到先得"跟随同一套顺序。
+        返回显式有序的 tuple，使下游 3D 去重的"先到先得"跟随同一套顺序。
         """
-        keeps: dict[int, torch.Tensor] = {}
+        keeps: list[tuple[SourceType, torch.Tensor]] = []
         occupied: torch.Tensor | None = None
         for descriptor in sorted(descriptors, key=lambda item: item.priority):
             entry = gated.get(int(descriptor.source_type))
@@ -131,8 +262,8 @@ class GrowthBuilder:
             keep = gate & ~occupied
             _increment_rejection(stats[descriptor.name], "duplicate_2d", int((gate & occupied).sum()))
             occupied |= keep
-            keeps[int(descriptor.source_type)] = keep
-        return keeps
+            keeps.append((descriptor.source_type, keep))
+        return tuple(keeps)
 
     def _apply_quota(
         self,
@@ -154,8 +285,7 @@ class GrowthBuilder:
             quota = int(source_policy_value(quotas, descriptor.name))
             if int(rows.numel()) > quota:
                 _increment_rejection(stats[descriptor.name], "quota_exhausted", int(rows.numel()) - quota)
-                # 均匀抽样而不是按光栅顺序截断，否则超额的源只会保留图像上半部
-                rows = rows[torch.linspace(0, int(rows.numel()) - 1, quota, device=rows.device).long()]
+                rows = self._select_quota_rows(rows, quota)
             within_quota[rows] = True
         return within_quota
 
@@ -165,6 +295,7 @@ class GrowthBuilder:
         rendered: RenderOutput,
         *,
         extra_evidences: tuple[DepthEvidence, ...] = (),
+        existing_points: torch.Tensor | None = None,
     ) -> GrowthResult:
         growth_inputs = GrowthInputs((*frame.growth.evidences, *extra_evidences))
         active_descriptors = descriptors_for_types(evidence.source_type for evidence in growth_inputs.evidences)
@@ -173,6 +304,14 @@ class GrowthBuilder:
             raise ValueError("GrowthInputs evidences must match frame shape")
         if tuple(rendered.accumulated_depth.shape) != expected or tuple(rendered.alpha.shape) != expected or tuple(rendered.rgb.shape) != (*expected, 3):
             raise ValueError("Rendered output dimensions do not match frame")
+        if existing_points is not None:
+            existing_points = torch.as_tensor(
+                existing_points, dtype=torch.float32, device=self.device,
+            )
+            if existing_points.ndim != 2 or existing_points.shape[1] != 3:
+                raise ValueError("Existing Gaussian points must have shape Nx3")
+            if not bool(torch.isfinite(existing_points).all()):
+                raise ValueError("Existing Gaussian points must be finite")
         needs = self._frame_needs(frame, rendered)
         stats = self._empty_stats(active_descriptors)
         gated: dict[int, tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = {}
@@ -210,15 +349,26 @@ class GrowthBuilder:
             _increment_rejection(source_stats, "below_confidence", int((in_range & ~confidence_valid).sum()))
             conflict = self._conflict_need(needs, depth, valid, descriptor.name)
             gate = confidence_valid & (needs.coverage | conflict)
-            # 把旧的单一 gate_blocked 拆成互斥两类，便于量化 RGB 残差项挡掉了多少
-            # 本该补洞的低 alpha 像素。两者之和仍等于原先的 gate_blocked。
+            # These are mutually exclusive rejection buckets. The old aggregate
+            # gate_blocked count is the sum of these coverage and non-coverage
+            # buckets.
             blocked = confidence_valid & ~gate
-            _increment_rejection(source_stats, "rgb_residual_suppressed", int((blocked & needs.low_alpha).sum()))
+            low_alpha_blocked = blocked & needs.low_alpha
+            _increment_rejection(
+                source_stats,
+                "rgb_residual_suppressed",
+                int((low_alpha_blocked & needs.rendered_rgb_valid).sum()),
+            )
+            _increment_rejection(
+                source_stats,
+                "rendered_rgb_invalid",
+                int((low_alpha_blocked & ~needs.rendered_rgb_valid).sum()),
+            )
             _increment_rejection(source_stats, "gate_blocked", int((blocked & ~needs.low_alpha).sum()))
             gated[int(evidence.source_type)] = (gate, depth, confidence)
 
         proposals: list[tuple[SourceType, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]] = []
-        for source_type, keep in self._arbitrate_2d(gated, active_descriptors, stats).items():
+        for source_type, keep in self._arbitrate_2d(gated, active_descriptors, stats):
             pixels = torch.nonzero(keep, as_tuple=False)
             if pixels.numel() == 0:
                 continue
@@ -233,18 +383,44 @@ class GrowthBuilder:
         points = torch.cat([item[2] for item in proposals])
         camera_depths = torch.cat([item[3] for item in proposals])
         confidences = torch.cat([item[4] for item in proposals])
-        voxel = torch.floor(points / self.config.candidate_duplicate_3d_threshold_m).to(torch.int64)
-        _, inverse = torch.unique(voxel, dim=0, return_inverse=True)
-        indices = torch.arange(points.shape[0], device=self.device, dtype=torch.int64)
-        first = torch.full((int(inverse.max()) + 1,), points.shape[0], dtype=torch.int64, device=self.device)
-        first.scatter_reduce_(0, inverse, indices, reduce="amin", include_self=True)
-        keep = indices == first[inverse]
-        offset = 0
-        for source_type, source_pixels, _, _, _ in proposals:
-            end = offset + source_pixels.shape[0]
-            duplicate_count = int((~keep[offset:end]).sum())
-            _increment_rejection(stats[descriptor_for_type(source_type).name], "duplicate_3d", duplicate_count)
-            offset = end
+        duplicate_threshold = self.config.candidate_duplicate_3d_threshold_m
+        if existing_points is not None:
+            existing_duplicate = _spatially_blocked(
+                points, existing_points, duplicate_threshold,
+            )
+            for descriptor in active_descriptors:
+                duplicate_count = int((
+                    existing_duplicate
+                    & (source_types == int(descriptor.source_type))
+                ).sum())
+                _increment_rejection(
+                    stats[descriptor.name],
+                    "duplicate_3d_existing",
+                    duplicate_count,
+                )
+            keep = ~existing_duplicate
+            source_types = source_types[keep]
+            pixels = pixels[keep]
+            points = points[keep]
+            camera_depths = camera_depths[keep]
+            confidences = confidences[keep]
+            if points.shape[0] == 0:
+                return GrowthResult(
+                    _empty_batch(self.device),
+                    GrowthStats(self._finish_stats(stats)),
+                )
+
+        duplicate = _spatially_blocked(
+            points, points, duplicate_threshold, prior_query_only=True,
+        )
+        for descriptor in active_descriptors:
+            duplicate_count = int((
+                duplicate & (source_types == int(descriptor.source_type))
+            ).sum())
+            _increment_rejection(
+                stats[descriptor.name], "duplicate_3d", duplicate_count,
+            )
+        keep = ~duplicate
         source_types = source_types[keep]
         pixels = pixels[keep]
         points = points[keep]
@@ -281,6 +457,8 @@ class GrowthBuilder:
         for source_stats in stats.values():
             source_stats["rejected"] = int(source_stats["proposed"]) - int(source_stats["accepted"])
             reasons = source_stats["rejection_reasons"]
+            if not set(reasons) <= _REJECTION_REASONS:
+                raise RuntimeError("Growth rejection reasons contain an unknown bucket")
             if int(source_stats["rejected"]) != sum(reasons.values()):
                 raise RuntimeError("Growth rejection statistics are inconsistent")
         return stats

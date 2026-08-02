@@ -356,6 +356,7 @@ class MappingEngine:
                             frame,
                             self._render(model, frame),
                             extra_evidences=extra_evidences,
+                            existing_points=model.means3d.detach(),
                         )
                     growth_batch = growth_result.batch
                     growth_stats = growth_result.stats

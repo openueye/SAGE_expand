@@ -1,5 +1,6 @@
 import numpy as np
 import torch
+from dataclasses import replace
 from types import SimpleNamespace
 
 from sage.engine.growth import GrowthBuilder
@@ -7,8 +8,8 @@ from sage.foundation.config import (
     ALPHA_NORMALIZED_DEPTH_POLICY,
     GaussianInitializationConfig,
     GrowthConfig,
+    ResidualThreshold,
 )
-from sage.foundation.source_policy import SOURCE_DESCRIPTORS
 from sage.foundation.contracts import (
     CameraIntrinsics,
     DepthEvidence,
@@ -174,38 +175,46 @@ def test_growth_quota_does_not_starve_low_priority_source() -> None:
 
 
 def test_arbitration_follows_declared_priority_not_iteration_order() -> None:
-    """2D 仲裁必须按 descriptor.priority 裁决，而不是按传入顺序。
+    """2D 仲裁必须按 descriptor.priority 裁决，而不是按证据占位顺序。"""
+    overlap = np.ones((_HEIGHT, _WIDTH), dtype=np.bool_)
+    frame = replace(
+        _multi_pixel_frame(),
+        growth=GrowthInputs((
+            DepthEvidence(
+                SourceType.LIDAR_RAW,
+                np.full((_HEIGHT, _WIDTH), 5.0, dtype=np.float32),
+                overlap,
+                overlap.astype(np.float32),
+            ),
+            DepthEvidence(
+                SourceType.SPNET_BLIND,
+                np.full((_HEIGHT, _WIDTH), 5.0, dtype=np.float32),
+                overlap,
+                overlap.astype(np.float32),
+            ),
+        )),
+    )
+    result = _quota_builder(None).build(frame, _uncovered_render(0.0))
 
-    `GrowthInputs` 已在契约层强制证据按优先级排序，所以这里直接打仲裁接缝：
-    即使字典以相反顺序传入，重叠像素也必须判给 LiDAR。
-    """
-    overlap = torch.ones((_HEIGHT, _WIDTH), dtype=torch.bool)
-    unused = torch.zeros((_HEIGHT, _WIDTH))
-    reversed_order = {
-        int(SourceType.SPNET_BLIND): (overlap, unused, unused),
-        int(SourceType.LIDAR_RAW): (overlap, unused, unused),
+    assert result.batch.means3d.shape[0] == _HEIGHT * _WIDTH
+    assert torch.all(result.batch.source_types == int(SourceType.LIDAR_RAW))
+    assert result.stats.by_source["SPNET_BLIND"]["rejection_reasons"] == {
+        "duplicate_2d": _HEIGHT * _WIDTH,
     }
-    stats = GrowthBuilder._empty_stats(SOURCE_DESCRIPTORS)
-
-    keeps = GrowthBuilder._arbitrate_2d(reversed_order, SOURCE_DESCRIPTORS, stats)
-
-    assert int(keeps[int(SourceType.LIDAR_RAW)].sum()) == _HEIGHT * _WIDTH
-    assert int(keeps[int(SourceType.SPNET_BLIND)].sum()) == 0
-    assert stats["SPNET_BLIND"]["rejection_reasons"]["duplicate_2d"] == _HEIGHT * _WIDTH
-    # 返回顺序也必须是优先级序，下游 3D 去重的"先到先得"依赖它
-    assert list(keeps) == [int(SourceType.LIDAR_RAW), int(SourceType.SPNET_BLIND)]
 
 
 def test_growth_quota_samples_uniformly_instead_of_truncating() -> None:
     frame = _multi_pixel_frame()
     quota = 4
     result = _quota_builder(_quotas(quota, quota)).build(frame, _uncovered_render(0.0))
+    repeat = _quota_builder(_quotas(quota, quota)).build(frame, _uncovered_render(0.0))
 
     # 光栅序截断只会留下最上面几行；均匀抽样必须跨越整个纵向范围
     heights = result.batch.means3d[:, 1]
     full = _quota_builder(None).build(frame, _uncovered_render(0.0)).batch.means3d[:, 1]
     span = float(heights.max() - heights.min())
     assert span > 0.5 * float(full.max() - full.min())
+    assert torch.equal(result.batch.means3d, repeat.batch.means3d)
 
 
 def test_growth_reports_rgb_residual_suppression_separately() -> None:
@@ -216,3 +225,135 @@ def test_growth_reports_rgb_residual_suppression_separately() -> None:
     assert result.batch.means3d.shape[0] == 0
     reasons = result.stats.by_source["LIDAR_RAW"]["rejection_reasons"]
     assert reasons == {"rgb_residual_suppressed": _HEIGHT * _WIDTH // 2}
+
+
+def test_growth_reports_invalid_rendered_rgb_separately() -> None:
+    result = _builder().build(_multi_pixel_frame(), _uncovered_render(float("nan")))
+
+    assert result.batch.means3d.shape[0] == 0
+    assert result.stats.by_source["LIDAR_RAW"]["rejection_reasons"] == {
+        "rendered_rgb_invalid": _HEIGHT * _WIDTH // 2,
+    }
+
+
+def test_growth_rejects_candidates_already_present_in_persistent_map() -> None:
+    first = _builder().build(_frame(8.0), _covered_render())
+    assert first.batch.means3d.shape[0] == 1
+
+    repeated = _builder().build(
+        _frame(8.0),
+        _covered_render(),
+        existing_points=first.batch.means3d,
+    )
+
+    assert repeated.batch.means3d.shape[0] == 0
+    assert repeated.stats.by_source["LIDAR_RAW"]["rejection_reasons"] == {
+        "duplicate_3d_existing": 1,
+    }
+
+
+def test_persistent_dedup_uses_distance_not_voxel_identity() -> None:
+    frame = _frame(1.0)
+    builder = GrowthBuilder(
+        GrowthConfig(candidate_duplicate_3d_threshold_m=0.05),
+        device="cpu",
+        gaussian_initialization=GaussianInitializationConfig(opacity=0.5),
+    )
+
+    # These points are in adjacent voxels but only 2 mm apart.
+    near_boundary = builder.build(
+        frame,
+        _covered_render(),
+        existing_points=torch.tensor([[0.051, 0.0, 1.0]]),
+    )
+    assert near_boundary.batch.means3d.shape[0] == 1
+
+    # The candidate is at (0, 0, 1); move it across the voxel boundary.
+    shifted_frame = replace(
+        frame, pose=Pose(0.049, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0),
+    )
+    near_boundary = builder.build(
+        shifted_frame,
+        _covered_render(),
+        existing_points=torch.tensor([[0.051, 0.0, 1.0]]),
+    )
+    assert near_boundary.batch.means3d.shape[0] == 0
+    assert near_boundary.stats.by_source["LIDAR_RAW"]["rejection_reasons"] == {
+        "duplicate_3d_existing": 1,
+    }
+
+    # Same voxel does not imply duplicate when the Euclidean distance is large.
+    same_voxel_far = builder.build(
+        frame,
+        _covered_render(),
+        existing_points=torch.tensor([[0.049, 0.049, 1.049]]),
+    )
+    assert same_voxel_far.batch.means3d.shape[0] == 1
+
+
+def test_growth_applies_raw_quota_alias_to_slam_sources() -> None:
+    frame = replace(
+        _multi_pixel_frame(),
+        growth=GrowthInputs((
+            DepthEvidence(
+                SourceType.LIDAR_SLAM_CENTER,
+                np.full((_HEIGHT, _WIDTH), 5.0, dtype=np.float32),
+                np.ones((_HEIGHT, _WIDTH), dtype=np.bool_),
+                np.ones((_HEIGHT, _WIDTH), dtype=np.float32),
+            ),
+        )),
+    )
+    result = GrowthBuilder(
+        GrowthConfig(max_new_per_commit={
+            "LIDAR_RAW": 3,
+            "LIDAR_FUSED5": 3,
+            "SPNET_BLIND": 3,
+        }),
+        device="cpu",
+        gaussian_initialization=GaussianInitializationConfig(opacity=0.5),
+    ).build(frame, _uncovered_render(0.0))
+
+    assert result.batch.means3d.shape[0] == 3
+    assert result.stats.by_source["LIDAR_SLAM_CENTER"]["accepted"] == 3
+
+
+def test_growth_zero_quota_disables_only_that_source() -> None:
+    result = _quota_builder(_quotas(0, 4)).build(
+        _multi_pixel_frame(), _uncovered_render(0.0),
+    )
+
+    assert int(result.stats.by_source["LIDAR_RAW"]["accepted"]) == 0
+    assert int(result.stats.by_source["SPNET_BLIND"]["accepted"]) == 4
+    assert result.stats.by_source["LIDAR_RAW"]["rejection_reasons"] == {
+        "quota_exhausted": _HEIGHT * _WIDTH // 2,
+    }
+
+
+def test_growth_conflict_threshold_is_strict() -> None:
+    residuals = {
+        "LIDAR_RAW": ResidualThreshold(0.2, 0.0),
+        "LIDAR_FUSED5": ResidualThreshold(0.2, 0.0),
+        "SPNET_BLIND": ResidualThreshold(0.2, 0.0),
+    }
+    builder = GrowthBuilder(
+        GrowthConfig(residual_thresholds=residuals),
+        device="cpu",
+        gaussian_initialization=GaussianInitializationConfig(opacity=0.5),
+    )
+
+    at_threshold = builder.build(_frame(10.2), _covered_render())
+    beyond_threshold = builder.build(_frame(10.2001), _covered_render())
+
+    assert at_threshold.batch.means3d.shape[0] == 0
+    assert beyond_threshold.batch.means3d.shape[0] == 1
+
+
+def test_growth_stats_partition_mixed_rejection_reasons() -> None:
+    result = _quota_builder(_quotas(2, 2)).build(
+        _multi_pixel_frame(), _uncovered_render(0.0),
+    )
+
+    for source_stats in result.stats.by_source.values():
+        reasons = source_stats["rejection_reasons"]
+        assert source_stats["rejected"] == sum(reasons.values())
+        assert source_stats["proposed"] == source_stats["accepted"] + source_stats["rejected"]

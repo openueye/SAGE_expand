@@ -271,9 +271,9 @@ class GrowthConfig:
         if quotas is not None:
             if (not isinstance(quotas, dict)
                     or frozenset(quotas) not in {frozenset(SOURCE_NAMES), frozenset(SLAM_SOURCE_NAMES)}
-                    or any(type(value) is not int or value < 1 for value in quotas.values())):
+                    or any(type(value) is not int or value < 0 for value in quotas.values())):
                 raise ValueError(
-                    "max_new_per_commit must define a positive integer quota for all sources, or be null"
+                    "max_new_per_commit must define a non-negative integer quota for all sources, or be null"
                 )
         object.__setattr__(self, "confidence_thresholds", dict(confidence))
         object.__setattr__(self, "residual_thresholds", dict(residual))
