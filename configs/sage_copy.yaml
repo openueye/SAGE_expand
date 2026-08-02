@@ -65,7 +65,7 @@ refinement:
   log_scales_learning_rate: 0.0001
   rotations_learning_rate: 0.0001
   opacity_anchor_weight: 0.1
-  lidar_depth_weight: 0
+  lidar_depth_weight: 0.000000000001
   dense_normal_weight: 0.05
   dense_normal_edge_weight_gamma: 10.0
   dense_normal_alpha_support: 0.85
