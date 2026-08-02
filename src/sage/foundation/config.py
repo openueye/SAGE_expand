@@ -19,7 +19,7 @@ ODIN_GLOBAL_CURRENT_ANCHORED_VARIANT = "odin-global-current-anchored-v1"
 NATIVE_FULL_FRAME_PAD_CROP_V1 = "native-full-frame-pad-crop-v1"
 RAW_ACCUMULATED_DEPTH_POLICY = "raw-accumulated-v1"
 ALPHA_NORMALIZED_DEPTH_POLICY = "alpha-normalized-v1"
-FROZEN_MAPPING_LOSS_VARIANT = "loss-v2-alpha-soft-v1"
+FROZEN_MAPPING_LOSS_VARIANT = "loss-v3-alpha-detached-support-coverage-v1"
 ALL_ACCEPTED_FRAME_POLICY = "all-accepted"
 ALL_ACCEPTED_FRAME_LIMIT = -1
 
@@ -303,12 +303,23 @@ class MappingLossConfig:
     image_weight: float = 1.0
     ssim_weight: float = 0.2
     depth_weight: float = 0.005
-    alpha_support_a0: float = 0.01
+    depth_coverage_weight: float = 0.05
+    alpha_support_a0: float = 0.85
+    depth_coverage_threshold: float = 0.85
+    epsilon: float = 1e-6
 
     def __post_init__(self) -> None:
         if self.variant != FROZEN_MAPPING_LOSS_VARIANT:
             raise ValueError(f"SAGE-GS v1 requires loss variant {FROZEN_MAPPING_LOSS_VARIANT}")
-        for name in ("image_weight", "ssim_weight", "depth_weight", "alpha_support_a0"):
+        for name in (
+            "image_weight",
+            "ssim_weight",
+            "depth_weight",
+            "depth_coverage_weight",
+            "alpha_support_a0",
+            "depth_coverage_threshold",
+            "epsilon",
+        ):
             try:
                 value = float(getattr(self, name))
             except (TypeError, ValueError) as exc:
@@ -322,8 +333,16 @@ class MappingLossConfig:
             raise ValueError("ssim_weight must be within [0, 1]")
         if self.depth_weight < 0:
             raise ValueError("depth_weight must be non-negative")
+        if self.depth_coverage_weight < 0:
+            raise ValueError("depth_coverage_weight must be non-negative")
         if not 0 < self.alpha_support_a0 <= 1:
             raise ValueError("alpha_support_a0 must be finite and within (0, 1]")
+        if not 0 < self.depth_coverage_threshold <= 1:
+            raise ValueError(
+                "depth_coverage_threshold must be finite and within (0, 1]"
+            )
+        if self.epsilon <= 0:
+            raise ValueError("epsilon must be finite and positive")
 
 
 @dataclass(frozen=True)

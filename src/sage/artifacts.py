@@ -78,6 +78,7 @@ _SOURCE_COMMIT_FIELDS = {
     "fps",
     "final_image_loss",
     "final_depth_loss",
+    "final_depth_coverage_loss",
     "final_depth_valid_pixels",
     "final_depth_mean_alpha",
     "spnet_invoked",
@@ -93,6 +94,7 @@ _DIAGNOSTIC_FIELDS = {
         "geo_fused5",
         "hit_center",
         "hit_fused5",
+        "depth_coverage",
         "total",
     },
     "depth": {
@@ -557,4 +559,3 @@ def load_checkpoint(path: Path) -> dict[str, object]:
     if version == APPEARANCE_REFINEMENT_CHECKPOINT_VERSION:
         _validate_refinement(payload["appearance_refinement"])
     return payload
-

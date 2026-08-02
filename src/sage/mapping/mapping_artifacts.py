@@ -27,7 +27,7 @@ from .run_identity import RunInputIdentity
 RUN_MANIFEST_SCHEMA_VERSION = "sage-run-manifest-v1"
 
 _DIAGNOSTIC_FIELDS = {
-    "loss": {"photo", "geo_center", "geo_fused5", "hit_center", "hit_fused5", "total"},
+    "loss": {"photo", "geo_center", "geo_fused5", "hit_center", "hit_fused5", "depth_coverage", "total"},
     "depth": {"valid_pixels", "valid_center_pixels", "valid_fused5_pixels", "center_mae", "fused5_mae"},
     "alpha": {"center_mean", "center_p10", "center_p50", "fused5_mean", "fused5_p10", "fused5_p50", "below_a0_fraction"},
 }

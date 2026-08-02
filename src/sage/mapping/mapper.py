@@ -125,6 +125,7 @@ class MappingCommit:
     fps: float
     final_image_loss: float
     final_depth_loss: float
+    final_depth_coverage_loss: float
     final_depth_valid_pixels: int
     final_depth_mean_alpha: float
     spnet_invoked: bool = False
@@ -505,6 +506,7 @@ class MappingEngine:
                     fps=processed_frames / elapsed,
                     final_image_loss=float(final_terms["image"].detach()),
                     final_depth_loss=float(final_terms["depth"].detach()),
+                    final_depth_coverage_loss=float(final_terms["depth_coverage"].detach()),
                     final_depth_valid_pixels=int(final_terms["depth_valid_pixels"].detach()),
                     final_depth_mean_alpha=float(final_terms["depth_mean_alpha"].detach()),
                     spnet_invoked=spnet_invoked,
@@ -518,6 +520,7 @@ class MappingEngine:
                             "geo_fused5": float(final_terms["geo_fused5"].detach()),
                             "hit_center": float(final_terms["hit_center"].detach()),
                             "hit_fused5": float(final_terms["hit_fused5"].detach()),
+                            "depth_coverage": float(final_terms["depth_coverage"].detach()),
                             "total": final_loss,
                         },
                         "depth": {

@@ -90,6 +90,24 @@ def _masked_mean(
     return safe_values.sum() / denominator.clamp_min(1)
 
 
+def _weighted_mean(
+    values: torch.Tensor,
+    weights: torch.Tensor,
+    *,
+    epsilon: float,
+) -> torch.Tensor:
+    """Reduce finite values with an explicit soft-weight mass denominator."""
+    safe_weights = torch.where(
+        torch.isfinite(weights) & (weights > 0),
+        weights,
+        torch.zeros_like(weights),
+    )
+    safe_values = torch.where(
+        torch.isfinite(values), values, torch.zeros_like(values),
+    )
+    return (safe_values * safe_weights).sum() / (safe_weights.sum() + epsilon)
+
+
 def _alpha_statistics(
     alpha: torch.Tensor,
     mask: torch.Tensor,
@@ -169,48 +187,82 @@ def mapping_loss(
         raise ValueError("Policy mapping loss requires matching rendered alpha")
 
     target_valid = torch.isfinite(target_depth) & (target_depth > 0)
-    raw_valid = torch.isfinite(rendered_depth)
     device = rendered_depth.device
     masks = (
         source_masks
         if source_masks is not None
         else _source_masks(target_mapping, device)
     )
-    observation_valid = target_valid & raw_valid
-    depth_for_loss = alpha_normalized_depth(rendered_depth, rendered_alpha)
+    depth_for_loss = alpha_normalized_depth(
+        rendered_depth, rendered_alpha, epsilon=policy.epsilon,
+    )
     alpha_valid = torch.isfinite(rendered_alpha) & (rendered_alpha >= 0)
-    observation_valid &= alpha_valid & torch.isfinite(depth_for_loss)
+    # The residual mask follows the requested target/rendered-depth validity
+    # contract. Renderer support is intentionally not allowed into its
+    # denominator except through the detached soft weight below.
+    observation_valid = target_valid & (depth_for_loss > 0)
     support = torch.where(
         alpha_valid,
         (rendered_alpha / policy.alpha_support_a0).clamp(0, 1),
         torch.zeros_like(rendered_alpha),
     ).detach()
     support = torch.where(
-        observation_valid & (depth_for_loss > 0), support, torch.zeros_like(support),
+        observation_valid, support, torch.zeros_like(support),
     )
     loss_valid = support > 0
-    a0 = policy.alpha_support_a0
-    # |M_s| is defined by the target/source observation, not renderer support.
-    fixed_depth_denominator = target_valid
 
     safe_depth = torch.where(torch.isfinite(depth_for_loss), depth_for_loss, torch.zeros_like(depth_for_loss))
     safe_target = torch.where(target_valid, target_depth, torch.zeros_like(target_depth))
     residual = (safe_depth - safe_target).abs()
-    numerator = residual * support
-    depth = _masked_mean(numerator, fixed_depth_denominator)
+    # This is sum(M * w * rho) / (sum(M * w) + epsilon), rather than a
+    # target-valid count mean. Missing renderer support therefore cannot
+    # silently dilute the residual.
+    depth = _weighted_mean(
+        residual,
+        support,
+        epsilon=policy.epsilon,
+    )
+    safe_alpha = torch.where(alpha_valid, rendered_alpha, torch.zeros_like(rendered_alpha))
+    coverage_residual = (
+        policy.depth_coverage_threshold - safe_alpha
+    ).clamp_min(0)
+    # Coverage is a separate alpha objective. It sees every valid target pixel,
+    # including pixels excluded from the residual because they lack support.
+    depth_coverage = _weighted_mean(
+        coverage_residual.square(),
+        target_valid.to(dtype=rendered_depth.dtype),
+        epsilon=policy.epsilon,
+    )
     total = (
         policy.image_weight * image + policy.depth_weight * depth
+        + policy.depth_coverage_weight * depth_coverage
         if include_image
-        else depth
+        else policy.depth_weight * depth
+        + policy.depth_coverage_weight * depth_coverage
     )
     if not include_diagnostics:
-        return total, {"depth": depth}
+        return total, {"depth": depth, "depth_coverage": depth_coverage}
 
     zero = _zero(rendered_depth) + _zero(rendered_alpha)
-    geo_center = _masked_mean(numerator, fixed_depth_denominator & masks["center"])
-    geo_fused5 = _masked_mean(numerator, fixed_depth_denominator & masks["fused5"])
-    center_mae = _masked_mean(residual * observation_valid.to(residual.dtype), fixed_depth_denominator & masks["center"])
-    fused5_mae = _masked_mean(residual * observation_valid.to(residual.dtype), fixed_depth_denominator & masks["fused5"])
+    geo_center = _weighted_mean(
+        residual,
+        support * masks["center"].to(dtype=rendered_depth.dtype),
+        epsilon=policy.epsilon,
+    )
+    geo_fused5 = _weighted_mean(
+        residual,
+        support * masks["fused5"].to(dtype=rendered_depth.dtype),
+        epsilon=policy.epsilon,
+    )
+    center_mae = _masked_mean(
+        residual * observation_valid.to(residual.dtype),
+        target_valid & masks["center"],
+    )
+    fused5_mae = _masked_mean(
+        residual * observation_valid.to(residual.dtype),
+        target_valid & masks["fused5"],
+    )
+    a0 = policy.alpha_support_a0
 
     hit_center = zero
     hit_fused5 = zero
@@ -242,11 +294,14 @@ def mapping_loss(
         "hit": hit,
         "hit_center": hit_center,
         "hit_fused5": hit_fused5,
-        "depth_valid_pixels": (loss_valid & target_valid).to(dtype=rendered_depth.dtype).sum(),
-        "depth_valid_center_pixels": (loss_valid & target_valid & masks["center"]).to(dtype=rendered_depth.dtype).sum(),
-        "depth_valid_fused5_pixels": (loss_valid & target_valid & masks["fused5"]).to(dtype=rendered_depth.dtype).sum(),
+        "depth_valid_pixels": loss_valid.to(dtype=rendered_depth.dtype).sum(),
+        "depth_valid_center_pixels": (loss_valid & masks["center"]).to(dtype=rendered_depth.dtype).sum(),
+        "depth_valid_fused5_pixels": (loss_valid & masks["fused5"]).to(dtype=rendered_depth.dtype).sum(),
+        "depth_support_weight_sum": support.sum(),
+        "depth_coverage_valid_pixels": target_valid.to(dtype=rendered_depth.dtype).sum(),
         "depth_center_mae": center_mae,
         "depth_fused5_mae": fused5_mae,
+        "depth_coverage": depth_coverage,
         "depth_mean_alpha": _masked_mean(
             rendered_alpha,
             loss_valid,

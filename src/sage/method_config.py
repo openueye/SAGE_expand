@@ -292,7 +292,10 @@ class SageMethodConfig:
                 "image_weight",
                 "ssim_weight",
                 "depth_weight",
+                "depth_coverage_weight",
                 "alpha_support",
+                "depth_coverage_threshold",
+                "epsilon",
             },
         )
         residuals = growth["residual_thresholds"]
@@ -327,7 +330,10 @@ class SageMethodConfig:
                 image_weight=loss["image_weight"],
                 ssim_weight=loss["ssim_weight"],
                 depth_weight=loss["depth_weight"],
+                depth_coverage_weight=loss["depth_coverage_weight"],
                 alpha_support_a0=loss["alpha_support"],
+                depth_coverage_threshold=loss["depth_coverage_threshold"],
+                epsilon=loss["epsilon"],
             ),
         }
 
