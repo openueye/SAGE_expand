@@ -54,7 +54,7 @@ mapping:
   loss:
     image_weight: 1.0
     ssim_weight: 0.2
-    depth_weight: 0
+    depth_weight: 0.000000000001
     alpha_support: 0.85
 
 refinement:
