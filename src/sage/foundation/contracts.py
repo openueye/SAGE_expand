@@ -1,34 +1,28 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import IntEnum
+from enum import Enum, IntEnum
 
 import numpy as np
 import torch
 
 
 class SourceType(IntEnum):
-    LIDAR_RAW = 0
-    LIDAR_FUSED5 = 1
-    SPNET_BLIND = 2
-    LIDAR_SLAM_CENTER = 3
-    LIDAR_SLAM_FUSED5 = 4
+    """Canonical Gaussian provenance roles used inside Stage I."""
+
+    LIDAR_CENTER = 0
+    LIDAR_FUSED = 1
+    SPNET_COMPLETED = 2
+
+
+class InputSourceFamily(str, Enum):
+    """Identity of the external input profile, not a Gaussian row role."""
+
+    LIDAR_RAW = "LIDAR_RAW"
+    SLAM_WORLD = "SLAM_WORLD"
 
 
 INVALID_SOURCE_TYPE = np.uint8(255)
-
-
-def _lidar_family(values: np.ndarray) -> str | None:
-    source_types = np.asarray(values)
-    has_raw = bool(np.isin(source_types, [
-        int(SourceType.LIDAR_RAW), int(SourceType.LIDAR_FUSED5),
-    ]).any())
-    has_slam = bool(np.isin(source_types, [
-        int(SourceType.LIDAR_SLAM_CENTER), int(SourceType.LIDAR_SLAM_FUSED5),
-    ]).any())
-    if has_raw and has_slam:
-        raise ValueError("Source types cannot mix raw and SLAM LiDAR families")
-    return "LIDAR_RAW" if has_raw else "SLAM_WORLD" if has_slam else None
 
 
 @dataclass(frozen=True)
@@ -79,6 +73,7 @@ class MappingObservation:
     depth_m: np.ndarray
     source_types: np.ndarray
     confidences: np.ndarray
+    input_source_family: InputSourceFamily | None = None
 
     def __post_init__(self) -> None:
         depth = np.asarray(self.depth_m)
@@ -99,20 +94,22 @@ class MappingObservation:
         if not np.isfinite(confidences).all() or ((confidences < 0) | (confidences > 1)).any():
             raise ValueError("Mapping confidences must be finite and within [0, 1]")
         valid_sources = np.isin(sources, [
-            int(SourceType.LIDAR_RAW), int(SourceType.LIDAR_FUSED5),
-            int(SourceType.LIDAR_SLAM_CENTER), int(SourceType.LIDAR_SLAM_FUSED5),
+            int(SourceType.LIDAR_CENTER), int(SourceType.LIDAR_FUSED),
             int(INVALID_SOURCE_TYPE),
         ])
         if not valid_sources.all():
             raise ValueError("Mapping source_types contains an unsupported source ID")
-        _lidar_family(sources)
+        if not isinstance(self.input_source_family, (InputSourceFamily, type(None))):
+            raise ValueError("Mapping input_source_family has an invalid type")
+        if np.any(sources != INVALID_SOURCE_TYPE) and self.input_source_family is None:
+            raise ValueError("Valid mapping pixels require an input_source_family")
         invalid = sources == INVALID_SOURCE_TYPE
         if np.any(invalid & ((depth != 0) | (confidences != 0))):
             raise ValueError("Invalid mapping pixels must have zero depth and confidence")
 
     @property
     def source_family(self) -> str | None:
-        return _lidar_family(self.source_types)
+        return self.input_source_family.value if self.input_source_family is not None else None
 
 
 @dataclass(frozen=True)
@@ -121,6 +118,7 @@ class DepthEvidence:
     depth_m: np.ndarray
     valid_mask: np.ndarray
     confidence: np.ndarray
+    input_source_family: InputSourceFamily
 
     def __post_init__(self) -> None:
         depth = np.asarray(self.depth_m)
@@ -128,6 +126,8 @@ class DepthEvidence:
         confidence = np.asarray(self.confidence)
         if not isinstance(self.source_type, SourceType):
             raise ValueError("DepthEvidence source_type must be a SourceType")
+        if not isinstance(self.input_source_family, InputSourceFamily):
+            raise ValueError("DepthEvidence input_source_family must be an InputSourceFamily")
         if depth.dtype != np.float32 or confidence.dtype != np.float32 or valid.dtype != np.bool_:
             raise ValueError("DepthEvidence arrays must be float32, bool, and float32")
         if depth.ndim != 2:
@@ -221,25 +221,23 @@ class GrowthInputs:
         if len(source_types) != len(set(source_types)):
             raise ValueError("GrowthInputs may contain each source type at most once")
         priorities = {
-            SourceType.LIDAR_RAW: 0,
-            SourceType.LIDAR_SLAM_CENTER: 0,
-            SourceType.LIDAR_FUSED5: 1,
-            SourceType.LIDAR_SLAM_FUSED5: 1,
-            SourceType.SPNET_BLIND: 2,
+            SourceType.LIDAR_CENTER: 0,
+            SourceType.LIDAR_FUSED: 1,
+            SourceType.SPNET_COMPLETED: 2,
         }
         if source_types != sorted(source_types, key=priorities.__getitem__):
             raise ValueError("GrowthInputs must be sorted by source priority")
-        raw_family = {SourceType.LIDAR_RAW, SourceType.LIDAR_FUSED5}
-        slam_family = {SourceType.LIDAR_SLAM_CENTER, SourceType.LIDAR_SLAM_FUSED5}
-        if set(source_types) & raw_family and set(source_types) & slam_family:
-            raise ValueError("GrowthInputs cannot mix raw and SLAM LiDAR source families")
+        families = {evidence.input_source_family for evidence in self.evidences}
+        if len(families) > 1:
+            raise ValueError("GrowthInputs cannot mix input source families")
         shapes = {evidence.depth_m.shape for evidence in self.evidences}
         if len(shapes) > 1:
             raise ValueError("GrowthInputs evidences must share the same shape")
 
     @property
     def source_family(self) -> str | None:
-        return _lidar_family(np.asarray([int(item.source_type) for item in self.evidences]))
+        families = {evidence.input_source_family for evidence in self.evidences}
+        return next(iter(families)).value if families else None
 
 
 @dataclass(frozen=True)

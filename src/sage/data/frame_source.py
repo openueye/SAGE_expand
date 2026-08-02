@@ -13,6 +13,7 @@ from ..foundation.contracts import (
     DepthEvidence,
     FrameInputs,
     GrowthInputs,
+    InputSourceFamily,
     INVALID_SOURCE_TYPE,
     MappingObservation,
     Pose,
@@ -273,8 +274,13 @@ class OdinBagFixedLagFrameSource:
             if len(self._source_modes) > 1:
                 raise ValueError("FrameSource cannot mix raw and SLAM LiDAR source families")
             target = result.target
-            center_type = SourceType[target.cloud.center_source_type]
-            fused_type = SourceType[target.cloud.fused_source_type]
+            input_source_family = (
+                InputSourceFamily.SLAM_WORLD
+                if source_mode.startswith("LIDAR_SLAM")
+                else InputSourceFamily.LIDAR_RAW
+            )
+            center_type = SourceType.LIDAR_CENTER
+            fused_type = SourceType.LIDAR_FUSED
             center_depth = np.asarray(result.center_depth, dtype=np.float32)
             fused_depth = np.asarray(result.fused_depth, dtype=np.float32)
             frame_intrinsics = target.intrinsics
@@ -313,11 +319,13 @@ class OdinBagFixedLagFrameSource:
             evidences = [DepthEvidence(
                 center_type, center_depth, center_valid,
                 np.where(center_valid, descriptor_for_type(center_type).default_confidence, 0.0).astype(np.float32),
+                input_source_family,
             )]
             if fused_enabled:
                 evidences.append(DepthEvidence(
                     fused_type, fused_depth, fused_valid,
                     np.where(fused_valid, descriptor_for_type(fused_type).default_confidence, 0.0).astype(np.float32),
+                    input_source_family,
                 ))
             self._emitted += 1
             if not first_frame_recorded:
@@ -332,7 +340,9 @@ class OdinBagFixedLagFrameSource:
                 intrinsics=frame_intrinsics,
                 pose=_matrix_to_pose(target.world_from_camera),
                 rgb=rgb,
-                mapping=MappingObservation(mapping_depth, mapping_sources, mapping_confidence),
+                mapping=MappingObservation(
+                    mapping_depth, mapping_sources, mapping_confidence, input_source_family,
+                ),
                 growth=GrowthInputs(tuple(evidences)),
             )
         self._exhausted = True

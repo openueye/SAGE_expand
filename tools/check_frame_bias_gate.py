@@ -22,6 +22,7 @@ from sage.foundation.contracts import (
     DepthEvidence,
     FrameInputs,
     GrowthInputs,
+    InputSourceFamily,
     MappingObservation,
     Pose,
     SourceType,
@@ -58,16 +59,25 @@ def _make_frame(secondary_depth_m: float, secondary_valid_count: int) -> FrameIn
         intrinsics=intrinsics,
         pose=pose,
         rgb=rgb,
-        mapping=MappingObservation(mapping_depth, mapping_sources, mapping_confidence),
+        mapping=MappingObservation(
+            mapping_depth, mapping_sources, mapping_confidence,
+            InputSourceFamily.SLAM_WORLD,
+        ),
         growth=GrowthInputs((
-            DepthEvidence(SourceType.LIDAR_SLAM_CENTER, reference_depth, reference_valid, reference_confidence),
-            DepthEvidence(SourceType.SPNET_BLIND, secondary_depth, secondary_valid, secondary_confidence),
+            DepthEvidence(
+                SourceType.LIDAR_CENTER, reference_depth, reference_valid,
+                reference_confidence, InputSourceFamily.SLAM_WORLD,
+            ),
+            DepthEvidence(
+                SourceType.SPNET_COMPLETED, secondary_depth, secondary_valid,
+                secondary_confidence, InputSourceFamily.SLAM_WORLD,
+            ),
         )),
     )
 
 
 def _make_rendered() -> RenderOutput:
-    # alpha=0 (uncovered) + rgb far from target keeps coverage_gate open for every pixel.
+    # Alpha-only coverage keeps the candidate gate open for every pixel.
     return RenderOutput(
         rgb=torch.full((HEIGHT, WIDTH, 3), 0.9, dtype=torch.float32),
         depth=torch.zeros((HEIGHT, WIDTH), dtype=torch.float32),
@@ -77,7 +87,7 @@ def _make_rendered() -> RenderOutput:
 
 def _spnet_reasons(builder: GrowthBuilder, frame: FrameInputs) -> dict[str, int]:
     result = builder.build(frame, _make_rendered())
-    return result.stats.by_source["SPNET_BLIND"]["rejection_reasons"]
+    return result.stats.by_source["SPNET_COMPLETED"]["rejection_reasons"]
 
 
 def main() -> None:

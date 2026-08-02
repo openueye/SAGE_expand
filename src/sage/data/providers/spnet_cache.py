@@ -149,10 +149,11 @@ class ReusingDenseSPNetProvider:
             valid = np.isfinite(cached.depth_m) & (cached.depth_m > 0)
             confidence = float(self._identity.confidence)
             evidence = DepthEvidence(
-                SourceType.SPNET_BLIND,
+                SourceType.SPNET_COMPLETED,
                 cached.depth_m,
                 valid,
                 np.where(valid, confidence, 0.0).astype(np.float32),
+                frame.mapping.input_source_family,
             )
             self.reused_frames += 1
         self._record_frame(frame)

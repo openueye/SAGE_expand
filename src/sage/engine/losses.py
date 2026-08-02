@@ -68,10 +68,8 @@ def alpha_normalized_depth(
 def _source_masks(target_mapping: MappingObservation, device: torch.device) -> dict[str, torch.Tensor]:
     source_types = torch.as_tensor(target_mapping.source_types, dtype=torch.uint8, device=device)
     return {
-        "center": (source_types == int(SourceType.LIDAR_RAW))
-        | (source_types == int(SourceType.LIDAR_SLAM_CENTER)),
-        "fused5": (source_types == int(SourceType.LIDAR_FUSED5))
-        | (source_types == int(SourceType.LIDAR_SLAM_FUSED5)),
+        "center": source_types == int(SourceType.LIDAR_CENTER),
+        "fused5": source_types == int(SourceType.LIDAR_FUSED),
     }
 
 

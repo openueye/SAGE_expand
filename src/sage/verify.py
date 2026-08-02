@@ -53,6 +53,7 @@ def execution_preflight(config: object, *, device: str = "cuda") -> dict[str, ob
         DepthEvidence,
         FrameInputs,
         GrowthInputs,
+        InputSourceFamily,
         INVALID_SOURCE_TYPE,
         MappingObservation,
         Pose,
@@ -75,12 +76,15 @@ def execution_preflight(config: object, *, device: str = "cuda") -> dict[str, ob
         intrinsics=CameraIntrinsics(width, height, 32.0, 32.0, width / 2, height / 2),
         pose=Pose(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0),
         rgb=np.zeros((height, width, 3), dtype=np.float32),
-        mapping=MappingObservation(depth, source_types, confidence),
+        mapping=MappingObservation(
+            depth, source_types, confidence, InputSourceFamily.SLAM_WORLD,
+        ),
         growth=GrowthInputs((DepthEvidence(
-            SourceType.LIDAR_SLAM_CENTER,
+            SourceType.LIDAR_CENTER,
             depth,
             valid,
             confidence,
+            InputSourceFamily.SLAM_WORLD,
         ),)),
     )
     target = torch.device(device)
@@ -92,7 +96,7 @@ def execution_preflight(config: object, *, device: str = "cuda") -> dict[str, ob
         torch.tensor([[1.0, 0.0, 0.0, 0.0]], device=target),
         torch.zeros(1, dtype=torch.int64, device=target),
         torch.zeros(1, dtype=torch.int64, device=target),
-        torch.full((1,), int(SourceType.LIDAR_SLAM_CENTER), dtype=torch.uint8, device=target),
+        torch.full((1,), int(SourceType.LIDAR_CENTER), dtype=torch.uint8, device=target),
         torch.ones(1, device=target),
     ).eval()
     rendered = render(model, frame)

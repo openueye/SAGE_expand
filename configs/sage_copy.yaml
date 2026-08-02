@@ -36,28 +36,25 @@ mapping:
   growth:
     # LIC2 inserts a point whenever the projected pixel has alpha < 0.99.
     coverage_alpha_threshold: 0.99
-    # Zero makes the RGB part of the SAGE coverage gate effectively permissive
-    # for ordinary floating-point renders; exact zero residuals remain blocked.
-    rgb_residual_threshold: 0.0
     min_candidate_depth_m: 0.0001
     max_candidate_depth_m: 20.0
     # Make SAGE's 3-D candidate deduplication negligible; it cannot be disabled
     # completely through config because the schema requires a positive value.
     candidate_duplicate_3d_threshold_m: 0.00000001
     confidence_thresholds:
-      LIDAR_SLAM_CENTER: 0.0
-      LIDAR_SLAM_FUSED5: 0.0
-      SPNET_BLIND: 0.0
+      LIDAR_CENTER: 0.0
+      LIDAR_FUSED: 0.0
+      SPNET_COMPLETED: 0.0
     residual_thresholds:
       # Disable SAGE's additional geometry-residual gate; LIC2 uses alpha only.
-      LIDAR_SLAM_CENTER: {absolute_m: 1000000000.0, relative: 1000000000.0}
-      LIDAR_SLAM_FUSED5: {absolute_m: 1000000000.0, relative: 1000000000.0}
-      SPNET_BLIND: {absolute_m: 1000000000.0, relative: 1000000000.0}
+      LIDAR_CENTER: {absolute_m: 1000000000.0, relative: 1000000000.0}
+      LIDAR_FUSED: {absolute_m: 1000000000.0, relative: 1000000000.0}
+      SPNET_COMPLETED: {absolute_m: 1000000000.0, relative: 1000000000.0}
   pruning:
     opacity_thresholds:
-      LIDAR_SLAM_CENTER: 0.05
-      LIDAR_SLAM_FUSED5: 0.08
-      SPNET_BLIND: 0.15
+      LIDAR_CENTER: 0.05
+      LIDAR_FUSED: 0.08
+      SPNET_COMPLETED: 0.15
     spnet_min_prune_age: 30
     spnet_scale_ceiling_m: null
   loss:

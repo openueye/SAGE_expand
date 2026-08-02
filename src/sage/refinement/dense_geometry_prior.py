@@ -56,8 +56,8 @@ def build_dense_geometry_prior(
     policy: DensePriorPolicy,
 ) -> DenseGeometryPrior:
     """Align a dense SPNet depth field to sparse LiDAR with a bilinear scale grid."""
-    if evidence.source_type != SourceType.SPNET_BLIND:
-        raise ValueError("Dense geometry prior requires SPNET_BLIND evidence")
+    if evidence.source_type != SourceType.SPNET_COMPLETED:
+        raise ValueError("Dense geometry prior requires SPNET_COMPLETED evidence")
     if evidence.depth_m.shape != mapping.depth_m.shape:
         raise ValueError("Dense evidence and mapping dimensions must match")
     raw_prediction = np.asarray(evidence.depth_m, dtype=np.float32)

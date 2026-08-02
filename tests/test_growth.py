@@ -15,6 +15,7 @@ from sage.foundation.contracts import (
     DepthEvidence,
     FrameInputs,
     GrowthInputs,
+    InputSourceFamily,
     INVALID_SOURCE_TYPE,
     MappingObservation,
     Pose,
@@ -37,10 +38,11 @@ def _frame(candidate_depth_m: float) -> FrameInputs:
         ),
         growth=GrowthInputs((
             DepthEvidence(
-                SourceType.LIDAR_RAW,
+                SourceType.LIDAR_CENTER,
                 np.full((1, 1), candidate_depth_m, dtype=np.float32),
                 np.ones((1, 1), dtype=np.bool_),
                 np.ones((1, 1), dtype=np.float32),
+                InputSourceFamily.LIDAR_RAW,
             ),
         )),
     )
@@ -75,7 +77,7 @@ def test_growth_does_not_duplicate_matching_alpha_normalized_depth() -> None:
     result = _builder().build(_frame(10.0), _covered_render())
 
     assert result.batch.means3d.shape[0] == 0
-    assert result.stats.by_source["LIDAR_RAW"]["rejection_reasons"] == {
+    assert result.stats.by_source["LIDAR_CENTER"]["rejection_reasons"] == {
         "gate_blocked": 1,
     }
 
@@ -84,7 +86,7 @@ def test_growth_keeps_real_alpha_normalized_depth_discrepancy() -> None:
     result = _builder().build(_frame(8.0), _covered_render())
 
     assert result.batch.means3d.shape[0] == 1
-    assert result.stats.by_source["LIDAR_RAW"]["accepted"] == 1
+    assert result.stats.by_source["LIDAR_CENTER"]["accepted"] == 1
 
 
 _HEIGHT = 8
@@ -110,16 +112,18 @@ def _multi_pixel_frame() -> FrameInputs:
         ),
         growth=GrowthInputs((
             DepthEvidence(
-                SourceType.LIDAR_RAW,
+                SourceType.LIDAR_CENTER,
                 np.full((_HEIGHT, _WIDTH), 5.0, dtype=np.float32),
                 left,
                 left.astype(np.float32),
+                InputSourceFamily.LIDAR_RAW,
             ),
             DepthEvidence(
-                SourceType.SPNET_BLIND,
+                SourceType.SPNET_COMPLETED,
                 np.full((_HEIGHT, _WIDTH), 7.0, dtype=np.float32),
                 right,
                 right.astype(np.float32),
+                InputSourceFamily.LIDAR_RAW,
             ),
         )),
     )
@@ -143,7 +147,7 @@ def _quota_builder(quotas: dict[str, int] | None) -> GrowthBuilder:
 
 
 def _quotas(lidar: int, spnet: int) -> dict[str, int]:
-    return {"LIDAR_RAW": lidar, "LIDAR_FUSED5": lidar, "SPNET_BLIND": spnet}
+    return {"LIDAR_CENTER": lidar, "LIDAR_FUSED": lidar, "SPNET_COMPLETED": spnet}
 
 
 def test_growth_quota_caps_each_source_independently() -> None:
@@ -157,9 +161,9 @@ def test_growth_quota_caps_each_source_independently() -> None:
     for lidar, spnet in ((per_source, per_source), (10, per_source), (per_source, 10), (1, 1)):
         result = _quota_builder(_quotas(lidar, spnet)).build(frame, render)
 
-        assert int(result.stats.by_source["LIDAR_RAW"]["accepted"]) == min(lidar, per_source)
+        assert int(result.stats.by_source["LIDAR_CENTER"]["accepted"]) == min(lidar, per_source)
         # 关键：LiDAR 收紧不得吃掉 SPNet 的额度，两者互不影响
-        assert int(result.stats.by_source["SPNET_BLIND"]["accepted"]) == min(spnet, per_source)
+        assert int(result.stats.by_source["SPNET_COMPLETED"]["accepted"]) == min(spnet, per_source)
         assert result.batch.means3d.shape[0] == min(lidar, per_source) + min(spnet, per_source)
 
 
@@ -168,8 +172,8 @@ def test_growth_quota_does_not_starve_low_priority_source() -> None:
     frame = _multi_pixel_frame()
     result = _quota_builder(_quotas(_HEIGHT * _WIDTH, 4)).build(frame, _uncovered_render(0.0))
 
-    assert int(result.stats.by_source["SPNET_BLIND"]["accepted"]) == 4
-    spnet = result.stats.by_source["SPNET_BLIND"]
+    assert int(result.stats.by_source["SPNET_COMPLETED"]["accepted"]) == 4
+    spnet = result.stats.by_source["SPNET_COMPLETED"]
     # 统计恒等式由 _finish_stats 强制；这里额外确认超额被显式归因
     assert spnet["rejection_reasons"]["quota_exhausted"] == _HEIGHT * _WIDTH // 2 - 4
 
@@ -181,24 +185,26 @@ def test_arbitration_follows_declared_priority_not_iteration_order() -> None:
         _multi_pixel_frame(),
         growth=GrowthInputs((
             DepthEvidence(
-                SourceType.LIDAR_RAW,
+                SourceType.LIDAR_CENTER,
                 np.full((_HEIGHT, _WIDTH), 5.0, dtype=np.float32),
                 overlap,
                 overlap.astype(np.float32),
+                InputSourceFamily.LIDAR_RAW,
             ),
             DepthEvidence(
-                SourceType.SPNET_BLIND,
+                SourceType.SPNET_COMPLETED,
                 np.full((_HEIGHT, _WIDTH), 5.0, dtype=np.float32),
                 overlap,
                 overlap.astype(np.float32),
+                InputSourceFamily.LIDAR_RAW,
             ),
         )),
     )
     result = _quota_builder(None).build(frame, _uncovered_render(0.0))
 
     assert result.batch.means3d.shape[0] == _HEIGHT * _WIDTH
-    assert torch.all(result.batch.source_types == int(SourceType.LIDAR_RAW))
-    assert result.stats.by_source["SPNET_BLIND"]["rejection_reasons"] == {
+    assert torch.all(result.batch.source_types == int(SourceType.LIDAR_CENTER))
+    assert result.stats.by_source["SPNET_COMPLETED"]["rejection_reasons"] == {
         "duplicate_2d": _HEIGHT * _WIDTH,
     }
 
@@ -217,23 +223,12 @@ def test_growth_quota_samples_uniformly_instead_of_truncating() -> None:
     assert torch.equal(result.batch.means3d, repeat.batch.means3d)
 
 
-def test_growth_reports_rgb_residual_suppression_separately() -> None:
-    """未覆盖但渲染颜色接近目标的低纹理像素，被 RGB 残差项挡下时要能量化。"""
+def test_growth_coverage_is_alpha_only() -> None:
+    """Low alpha remains a growth need regardless of rendered RGB residual."""
     frame = _multi_pixel_frame()
     result = _builder().build(frame, _uncovered_render(0.48))
 
-    assert result.batch.means3d.shape[0] == 0
-    reasons = result.stats.by_source["LIDAR_RAW"]["rejection_reasons"]
-    assert reasons == {"rgb_residual_suppressed": _HEIGHT * _WIDTH // 2}
-
-
-def test_growth_reports_invalid_rendered_rgb_separately() -> None:
-    result = _builder().build(_multi_pixel_frame(), _uncovered_render(float("nan")))
-
-    assert result.batch.means3d.shape[0] == 0
-    assert result.stats.by_source["LIDAR_RAW"]["rejection_reasons"] == {
-        "rendered_rgb_invalid": _HEIGHT * _WIDTH // 2,
-    }
+    assert result.batch.means3d.shape[0] == _HEIGHT * _WIDTH
 
 
 def test_growth_rejects_candidates_already_present_in_persistent_map() -> None:
@@ -247,7 +242,7 @@ def test_growth_rejects_candidates_already_present_in_persistent_map() -> None:
     )
 
     assert repeated.batch.means3d.shape[0] == 0
-    assert repeated.stats.by_source["LIDAR_RAW"]["rejection_reasons"] == {
+    assert repeated.stats.by_source["LIDAR_CENTER"]["rejection_reasons"] == {
         "duplicate_3d_existing": 1,
     }
 
@@ -278,7 +273,7 @@ def test_persistent_dedup_uses_distance_not_voxel_identity() -> None:
         existing_points=torch.tensor([[0.051, 0.0, 1.0]]),
     )
     assert near_boundary.batch.means3d.shape[0] == 0
-    assert near_boundary.stats.by_source["LIDAR_RAW"]["rejection_reasons"] == {
+    assert near_boundary.stats.by_source["LIDAR_CENTER"]["rejection_reasons"] == {
         "duplicate_3d_existing": 1,
     }
 
@@ -291,30 +286,31 @@ def test_persistent_dedup_uses_distance_not_voxel_identity() -> None:
     assert same_voxel_far.batch.means3d.shape[0] == 1
 
 
-def test_growth_applies_raw_quota_alias_to_slam_sources() -> None:
+def test_growth_keeps_canonical_roles_for_slam_input() -> None:
     frame = replace(
         _multi_pixel_frame(),
         growth=GrowthInputs((
             DepthEvidence(
-                SourceType.LIDAR_SLAM_CENTER,
+                SourceType.LIDAR_CENTER,
                 np.full((_HEIGHT, _WIDTH), 5.0, dtype=np.float32),
                 np.ones((_HEIGHT, _WIDTH), dtype=np.bool_),
                 np.ones((_HEIGHT, _WIDTH), dtype=np.float32),
+                InputSourceFamily.SLAM_WORLD,
             ),
         )),
     )
     result = GrowthBuilder(
         GrowthConfig(max_new_per_commit={
-            "LIDAR_RAW": 3,
-            "LIDAR_FUSED5": 3,
-            "SPNET_BLIND": 3,
+            "LIDAR_CENTER": 3,
+            "LIDAR_FUSED": 3,
+            "SPNET_COMPLETED": 3,
         }),
         device="cpu",
         gaussian_initialization=GaussianInitializationConfig(opacity=0.5),
     ).build(frame, _uncovered_render(0.0))
 
     assert result.batch.means3d.shape[0] == 3
-    assert result.stats.by_source["LIDAR_SLAM_CENTER"]["accepted"] == 3
+    assert result.stats.by_source["LIDAR_CENTER"]["accepted"] == 3
 
 
 def test_growth_zero_quota_disables_only_that_source() -> None:
@@ -322,18 +318,18 @@ def test_growth_zero_quota_disables_only_that_source() -> None:
         _multi_pixel_frame(), _uncovered_render(0.0),
     )
 
-    assert int(result.stats.by_source["LIDAR_RAW"]["accepted"]) == 0
-    assert int(result.stats.by_source["SPNET_BLIND"]["accepted"]) == 4
-    assert result.stats.by_source["LIDAR_RAW"]["rejection_reasons"] == {
+    assert int(result.stats.by_source["LIDAR_CENTER"]["accepted"]) == 0
+    assert int(result.stats.by_source["SPNET_COMPLETED"]["accepted"]) == 4
+    assert result.stats.by_source["LIDAR_CENTER"]["rejection_reasons"] == {
         "quota_exhausted": _HEIGHT * _WIDTH // 2,
     }
 
 
 def test_growth_conflict_threshold_is_strict() -> None:
     residuals = {
-        "LIDAR_RAW": ResidualThreshold(0.2, 0.0),
-        "LIDAR_FUSED5": ResidualThreshold(0.2, 0.0),
-        "SPNET_BLIND": ResidualThreshold(0.2, 0.0),
+        "LIDAR_CENTER": ResidualThreshold(0.2, 0.0),
+        "LIDAR_FUSED": ResidualThreshold(0.2, 0.0),
+        "SPNET_COMPLETED": ResidualThreshold(0.2, 0.0),
     }
     builder = GrowthBuilder(
         GrowthConfig(residual_thresholds=residuals),

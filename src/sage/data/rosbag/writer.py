@@ -18,6 +18,7 @@ from ...foundation.receipt_contract import (
     STREAM_RECEIPT_SCHEMA,
     validate_completion_receipt,
 )
+from ...foundation.source_policy import SOURCE_POLICY_VERSION
 from .poses import matrix_to_quaternion_xyzw
 
 from .geometry import ProjectedCenter, RejectedCenter
@@ -274,7 +275,7 @@ class PreparedSceneWriter:
             **self.profile.manifest_contract(),
             "complete": True,
             "non_formal": self.non_formal,
-            "source_policy_version": "sage-source-policy-v2",
+            "source_policy_version": SOURCE_POLICY_VERSION,
             "rejection_policy": "complete-centered-5-no-slot-compression-v1",
             "producer_identity": self.producer_identity,
             "production_receipt": receipt,

@@ -21,6 +21,7 @@ from sage.foundation.contracts import (
     DepthEvidence,
     FrameInputs,
     GrowthInputs,
+    InputSourceFamily,
     MappingObservation,
     Pose,
     SourceType,
@@ -37,10 +38,11 @@ def _frame() -> FrameInputs:
     center_depth[::4, ::4] = 5.0
     center_valid = center_depth > 0
     center = DepthEvidence(
-        SourceType.LIDAR_SLAM_CENTER,
+        SourceType.LIDAR_CENTER,
         center_depth,
         center_valid,
         center_valid.astype(np.float32),
+        InputSourceFamily.SLAM_WORLD,
     )
     return FrameInputs(
         4,
@@ -53,10 +55,11 @@ def _frame() -> FrameInputs:
             center_depth.copy(),
             np.where(
                 center_valid,
-                int(SourceType.LIDAR_SLAM_CENTER),
+                int(SourceType.LIDAR_CENTER),
                 255,
             ).astype(np.uint8),
             center_valid.astype(np.float32),
+            InputSourceFamily.SLAM_WORLD,
         ),
         GrowthInputs((center,)),
     )
@@ -138,10 +141,11 @@ class _FallbackProvider:
         depth = np.full(frame.rgb.shape[:2], 6.0, dtype=np.float32)
         valid = np.ones_like(depth, dtype=np.bool_)
         return DepthEvidence(
-            SourceType.SPNET_BLIND,
+            SourceType.SPNET_COMPLETED,
             depth,
             valid,
             np.full_like(depth, 0.4),
+            InputSourceFamily.SLAM_WORLD,
         )
 
 
@@ -155,10 +159,11 @@ class _LegacyMappingProvider:
         depth = np.full(frame.rgb.shape[:2], 7.0, dtype=np.float32)
         valid = np.ones_like(depth, dtype=np.bool_)
         return DepthEvidence(
-            SourceType.SPNET_BLIND,
+            SourceType.SPNET_COMPLETED,
             depth,
             valid,
             np.full_like(depth, 0.4),
+            InputSourceFamily.SLAM_WORLD,
         )
 
 
@@ -168,7 +173,7 @@ def test_mapping_preserves_legacy_spnet_provider_contract() -> None:
     evidence, dense_frame = mapping_spnet_evidence(provider, _frame())
 
     assert provider.calls == 1
-    assert evidence.source_type == SourceType.SPNET_BLIND
+    assert evidence.source_type == SourceType.SPNET_COMPLETED
     assert dense_frame is None
 
 

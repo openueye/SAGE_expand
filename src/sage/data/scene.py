@@ -10,7 +10,7 @@ import numpy as np
 from PIL import Image
 
 from ..foundation.config import SceneConfig
-from ..foundation.contracts import CameraIntrinsics, DepthEvidence, FrameInputs, GrowthInputs, INVALID_SOURCE_TYPE, MappingObservation, Pose, SourceType
+from ..foundation.contracts import CameraIntrinsics, DepthEvidence, FrameInputs, GrowthInputs, InputSourceFamily, INVALID_SOURCE_TYPE, MappingObservation, Pose, SourceType
 from ..foundation.hashing import sha256_file as _sha256_file
 from ..foundation.prepared_scene_contract import PREPARED_SCENE_SCHEMA, validate_source_contract
 from ..foundation.receipt_contract import (
@@ -18,7 +18,7 @@ from ..foundation.receipt_contract import (
     STREAM_RECEIPT_SCHEMA,
     validate_completion_receipt,
 )
-from ..foundation.source_policy import descriptor_for_type
+from ..foundation.source_policy import SOURCE_POLICY_VERSION, descriptor_for_type
 
 
 PREPARED_SCENE_MANIFEST_NAME = "sage_prepared_scene_manifest.json"
@@ -190,9 +190,14 @@ class PreparedScene:
         manifest = self._validate_contract()
         source = manifest["source"]
         assert isinstance(source, dict)
-        center_source_type = SourceType[source["center_source_type"]]
-        fused_source_type = SourceType[source["fused_source_type"]]
-        fused5_enabled = descriptor_for_type(fused_source_type).name in self.config.enabled_depth_sources
+        input_source_family = (
+            InputSourceFamily.SLAM_WORLD
+            if source["center_source_type"].startswith("LIDAR_SLAM")
+            else InputSourceFamily.LIDAR_RAW
+        )
+        center_source_type = SourceType.LIDAR_CENTER
+        fused_source_type = SourceType.LIDAR_FUSED
+        fused5_enabled = source["fused_source_type"] in self.config.enabled_depth_sources
         intrinsics = _read_intrinsics(self.config.scene_dir / "sparse" / "0" / "cameras.txt")
         _, ordered = self._ordered_associations(limit)
         poses = _rows_by_id(self.config.prepared_scene_dir / "poses" / "camera_poses.csv")
@@ -268,13 +273,17 @@ class PreparedScene:
             evidences = [DepthEvidence(
                 center_source_type, center_depth, center_valid,
                 np.where(center_valid, raw_confidence, 0.0).astype(np.float32),
+                input_source_family,
             )]
             if fused5_enabled:
                 evidences.append(DepthEvidence(
                     fused_source_type, fused_depth, fused_valid,
                     np.where(fused_valid, fused_confidence, 0.0).astype(np.float32),
+                    input_source_family,
                 ))
-            observation = MappingObservation(mapping_depth, mapping_sources, mapping_confidence)
+            observation = MappingObservation(
+                mapping_depth, mapping_sources, mapping_confidence, input_source_family,
+            )
             pose = Pose(*(float(pose_row[name]) for name in ("tx", "ty", "tz", "qx", "qy", "qz", "qw")))
             yield FrameInputs(
                 index=index,
@@ -336,7 +345,7 @@ class PreparedScene:
         receipt = manifest.get("production_receipt")
         if (
             manifest.get("complete") is not True
-            or manifest.get("source_policy_version") != "sage-source-policy-v2"
+            or manifest.get("source_policy_version") != SOURCE_POLICY_VERSION
             or manifest.get("rejection_policy") != "complete-centered-5-no-slot-compression-v1"
         ):
             raise ValueError("Prepared Scene v2 completion and no-fallback receipt is invalid")

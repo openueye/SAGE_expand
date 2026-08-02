@@ -41,7 +41,7 @@ from ..foundation.config import (
     MappingLossConfig,
     SageConfig,
 )
-from ..foundation.contracts import DenseGeometryPrior, FrameInputs
+from ..foundation.contracts import DenseGeometryPrior, FrameInputs, SourceType
 from ..foundation.hashing import sha256_file
 from ..foundation.identity_schema import (
     normalize_dataset_identity,
@@ -614,8 +614,8 @@ def run_appearance_refinement(
                     device=device,
                 ),
                 "source_masks": {
-                    "center": (source_types == 0) | (source_types == 3),
-                    "fused5": (source_types == 1) | (source_types == 4),
+                    "center": source_types == int(SourceType.LIDAR_CENTER),
+                    "fused5": source_types == int(SourceType.LIDAR_FUSED),
                 },
                 "dense_normal_static": prepare_dense_normal_static(
                     dense_priors[frame.index],

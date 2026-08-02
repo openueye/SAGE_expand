@@ -228,12 +228,10 @@ class MappingEngine:
                 ),
                 source_masks={
                     "center": (
-                        (source_types == int(SourceType.LIDAR_RAW))
-                        | (source_types == int(SourceType.LIDAR_SLAM_CENTER))
+                        source_types == int(SourceType.LIDAR_CENTER)
                     ),
                     "fused5": (
-                        (source_types == int(SourceType.LIDAR_FUSED5))
-                        | (source_types == int(SourceType.LIDAR_SLAM_FUSED5))
+                        source_types == int(SourceType.LIDAR_FUSED)
                     ),
                 },
             )
@@ -310,7 +308,7 @@ class MappingEngine:
                 provider_identity = self.spnet_provider.identity
                 commit_spnet_mode = provider_identity.mode
                 spnet_available = any(
-                    evidence.source_type == SourceType.SPNET_BLIND
+                    evidence.source_type == SourceType.SPNET_COMPLETED
                     for evidence in frame.growth.evidences
                 )
                 invoke_spnet = should_invoke_spnet(
@@ -322,7 +320,7 @@ class MappingEngine:
                         descriptor_for_type(evidence.source_type).name
                         for evidence in frame.growth.evidences
                         if evidence.source_type in {
-                            SourceType.LIDAR_RAW, SourceType.LIDAR_SLAM_CENTER,
+                            SourceType.LIDAR_CENTER,
                         }
                     }
                     if len(anchor_types) != 1:
@@ -346,8 +344,8 @@ class MappingEngine:
                         spnet_invoked = True
                         actual_spnet_invocations += 1
                         if provider_evidence is not None:
-                            if provider_evidence.source_type != SourceType.SPNET_BLIND:
-                                raise ValueError("SPNet provider must return SPNET_BLIND evidence")
+                            if provider_evidence.source_type != SourceType.SPNET_COMPLETED:
+                                raise ValueError("SPNet provider must return SPNET_COMPLETED evidence")
                             extra_evidences = (provider_evidence,)
                             spnet_available = True
                             spnet_valid_pixels = int(provider_evidence.valid_mask.sum())
@@ -610,7 +608,7 @@ class MappingEngine:
         scale_keep = torch.ones_like(opacity_keep)
         ceiling = self.pruning.spnet_scale_ceiling_m
         if ceiling is not None:
-            is_spnet = model.source_types == int(SourceType.SPNET_BLIND)
+            is_spnet = model.source_types == int(SourceType.SPNET_COMPLETED)
             over_ceiling = is_spnet & (model.scales.detach().max(dim=1).values > ceiling)
             scale_keep = ~over_ceiling
         policy_keep = opacity_keep & scale_keep
@@ -622,7 +620,7 @@ class MappingEngine:
             commit_ordinal_by_frame_index=commit_ordinal_by_frame_index,
         )
         spnet_age_protected_mask = (
-            (model.source_types == int(SourceType.SPNET_BLIND))
+            (model.source_types == int(SourceType.SPNET_COMPLETED))
             & ~policy_keep
             & (row_age >= 1)
             & (row_age < self.spnet_min_prune_age)

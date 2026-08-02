@@ -24,8 +24,6 @@ _REJECTION_REASONS = frozenset({
     "frame_bias",
     "depth_out_of_range",
     "below_confidence",
-    "rgb_residual_suppressed",
-    "rendered_rgb_invalid",
     "gate_blocked",
     "duplicate_2d",
     "duplicate_3d",
@@ -43,17 +41,15 @@ class GrowthStats:
 
 @dataclass(frozen=True)
 class FrameNeeds:
-    """哪些像素需要新增高斯——只由渲染结果与目标图像决定，不知道有几个证据源。
+    """哪些像素需要新增高斯——只由渲染结果决定，不知道有几个证据源。
 
-    coverage 与 conflict 是动机不同的两条通道，必须分开保留：合并成一条 bool
-    之后就无法回答"这个候选是补空洞还是修冲突"，也无法量化某个分量挡掉了多少。
+    coverage 只表示 alpha 不足；RGB 残差是诊断量，不再成为 coverage 的硬门。
     conflict 依赖逐源的深度与容差，因此只在这里提供它的公共部分。
     """
 
     target_rgb: torch.Tensor
-    coverage: torch.Tensor          # alpha 不足且 RGB 无法解释 —— 需要补面
+    coverage: torch.Tensor          # alpha 不足 —— 需要补面
     low_alpha: torch.Tensor         # 仅 alpha 不足，coverage 的上界，用于归因
-    rendered_rgb_valid: torch.Tensor
     rendered_depth: torch.Tensor    # alpha 归一化深度
     rendered_depth_valid: torch.Tensor
 
@@ -202,16 +198,12 @@ class GrowthBuilder:
     def _frame_needs(self, frame: FrameInputs, rendered: RenderOutput) -> FrameNeeds:
         """L1：由渲染结果推出帧级需求。纯函数，与证据源无关。"""
         target_rgb = torch.as_tensor(frame.rgb, dtype=torch.float32, device=self.device)
-        rgb_residual = (rendered.rgb - target_rgb).abs().mean(dim=-1)
         rendered_depth = alpha_normalized_depth(rendered.accumulated_depth, rendered.alpha)
         low_alpha = torch.isfinite(rendered.alpha) & (rendered.alpha < self.config.coverage_alpha_threshold)
-        rendered_rgb_valid = torch.isfinite(rendered.rgb).all(dim=-1)
-        rgb_unexplained = rendered_rgb_valid & (rgb_residual > self.config.rgb_residual_threshold)
         return FrameNeeds(
             target_rgb=target_rgb,
-            coverage=low_alpha & rgb_unexplained,
+            coverage=low_alpha,
             low_alpha=low_alpha,
-            rendered_rgb_valid=rendered_rgb_valid,
             rendered_depth=rendered_depth,
             rendered_depth_valid=torch.isfinite(rendered_depth) & (rendered_depth > 0),
         )
@@ -349,22 +341,8 @@ class GrowthBuilder:
             _increment_rejection(source_stats, "below_confidence", int((in_range & ~confidence_valid).sum()))
             conflict = self._conflict_need(needs, depth, valid, descriptor.name)
             gate = confidence_valid & (needs.coverage | conflict)
-            # These are mutually exclusive rejection buckets. The old aggregate
-            # gate_blocked count is the sum of these coverage and non-coverage
-            # buckets.
             blocked = confidence_valid & ~gate
-            low_alpha_blocked = blocked & needs.low_alpha
-            _increment_rejection(
-                source_stats,
-                "rgb_residual_suppressed",
-                int((low_alpha_blocked & needs.rendered_rgb_valid).sum()),
-            )
-            _increment_rejection(
-                source_stats,
-                "rendered_rgb_invalid",
-                int((low_alpha_blocked & ~needs.rendered_rgb_valid).sum()),
-            )
-            _increment_rejection(source_stats, "gate_blocked", int((blocked & ~needs.low_alpha).sum()))
+            _increment_rejection(source_stats, "gate_blocked", int(blocked.sum()))
             gated[int(evidence.source_type)] = (gate, depth, confidence)
 
         proposals: list[tuple[SourceType, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]] = []

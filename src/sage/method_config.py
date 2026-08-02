@@ -272,7 +272,6 @@ class SageMethodConfig:
             "growth",
             {
                 "coverage_alpha_threshold",
-                "rgb_residual_threshold",
                 "min_candidate_depth_m",
                 "max_candidate_depth_m",
                 "candidate_duplicate_3d_threshold_m",
@@ -312,7 +311,6 @@ class SageMethodConfig:
             ),
             "growth": GrowthConfig(
                 coverage_alpha_threshold=growth["coverage_alpha_threshold"],
-                rgb_residual_threshold=growth["rgb_residual_threshold"],
                 min_candidate_depth_m=growth["min_candidate_depth_m"],
                 max_candidate_depth_m=growth["max_candidate_depth_m"],
                 candidate_duplicate_3d_threshold_m=(

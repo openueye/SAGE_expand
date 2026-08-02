@@ -7,7 +7,7 @@ import torch
 from .contracts import SourceType
 
 
-SOURCE_POLICY_VERSION = "sage-source-policy-v2"
+SOURCE_POLICY_VERSION = "sage-source-policy-v3"
 
 
 @dataclass(frozen=True)
@@ -21,34 +21,18 @@ class SourceDescriptor:
 
 
 SOURCE_DESCRIPTORS = (
-    SourceDescriptor("LIDAR_RAW", SourceType.LIDAR_RAW, 1.0, 0.0, 0.03, 0),
-    SourceDescriptor("LIDAR_FUSED5", SourceType.LIDAR_FUSED5, 0.7, 0.5, 0.05, 1),
-    SourceDescriptor("SPNET_BLIND", SourceType.SPNET_BLIND, 0.4, 0.25, 0.10, 2),
+    SourceDescriptor("LIDAR_CENTER", SourceType.LIDAR_CENTER, 1.0, 0.0, 0.03, 0),
+    SourceDescriptor("LIDAR_FUSED", SourceType.LIDAR_FUSED, 0.7, 0.5, 0.05, 1),
+    SourceDescriptor("SPNET_COMPLETED", SourceType.SPNET_COMPLETED, 0.4, 0.25, 0.10, 2),
 )
 SOURCE_NAMES = tuple(descriptor.name for descriptor in SOURCE_DESCRIPTORS)
-SLAM_SOURCE_DESCRIPTORS = (
-    SourceDescriptor("LIDAR_SLAM_CENTER", SourceType.LIDAR_SLAM_CENTER, 1.0, 0.0, 0.03, 0),
-    SourceDescriptor("LIDAR_SLAM_FUSED5", SourceType.LIDAR_SLAM_FUSED5, 0.7, 0.5, 0.05, 1),
-    SOURCE_DESCRIPTORS[2],
-)
-ALL_SOURCE_DESCRIPTORS = (*SOURCE_DESCRIPTORS, *SLAM_SOURCE_DESCRIPTORS[:2])
-SLAM_SOURCE_NAMES = tuple(descriptor.name for descriptor in SLAM_SOURCE_DESCRIPTORS)
-SOURCE_NAME_ALIASES = {
-    "LIDAR_RAW": "LIDAR_SLAM_CENTER",
-    "LIDAR_FUSED5": "LIDAR_SLAM_FUSED5",
-    "LIDAR_SLAM_CENTER": "LIDAR_RAW",
-    "LIDAR_SLAM_FUSED5": "LIDAR_FUSED5",
-    "SPNET_BLIND": "SPNET_BLIND",
-}
+ALL_SOURCE_DESCRIPTORS = SOURCE_DESCRIPTORS
 
 
 def source_policy_value(values: dict[str, object], source_name: str):
     if source_name in values:
         return values[source_name]
-    alias = SOURCE_NAME_ALIASES[source_name]
-    if alias not in values:
-        raise ValueError(f"Source policy has no value for {source_name}")
-    return values[alias]
+    raise ValueError(f"Source policy has no value for {source_name}")
 
 
 def materialize_source_policy(values: dict[str, object], descriptors: tuple[SourceDescriptor, ...]) -> dict[str, object]:
@@ -56,21 +40,23 @@ def materialize_source_policy(values: dict[str, object], descriptors: tuple[Sour
 
 
 def descriptors_for_types(source_types: object) -> tuple[SourceDescriptor, ...]:
-    if isinstance(source_types, torch.Tensor):
-        uses_slam = bool(torch.isin(source_types.detach(), torch.tensor(
-            [int(SourceType.LIDAR_SLAM_CENTER), int(SourceType.LIDAR_SLAM_FUSED5)],
-            device=source_types.device,
-        )).any())
+    values = source_types.detach().reshape(-1) if isinstance(source_types, torch.Tensor) else source_types
+    supported = torch.tensor(
+        [int(descriptor.source_type) for descriptor in SOURCE_DESCRIPTORS],
+        dtype=torch.uint8,
+        device=values.device if isinstance(values, torch.Tensor) else None,
+    )
+    if isinstance(values, torch.Tensor):
+        torch._assert_async(torch.isin(values.to(torch.uint8), supported).all(), "Unsupported source type")
     else:
-        uses_slam = any(SourceType(int(value)) in {
-            SourceType.LIDAR_SLAM_CENTER, SourceType.LIDAR_SLAM_FUSED5,
-        } for value in source_types)
-    return SLAM_SOURCE_DESCRIPTORS if uses_slam else SOURCE_DESCRIPTORS
+        if any(int(value) not in {int(item.source_type) for item in SOURCE_DESCRIPTORS} for value in values):
+            raise ValueError("Unsupported source type")
+    return SOURCE_DESCRIPTORS
 
 
 def descriptor_for_type(source_type: int | SourceType) -> SourceDescriptor:
     try:
-        return next(descriptor for descriptor in ALL_SOURCE_DESCRIPTORS if int(descriptor.source_type) == int(source_type))
+        return next(descriptor for descriptor in SOURCE_DESCRIPTORS if int(descriptor.source_type) == int(source_type))
     except StopIteration as exc:
         raise ValueError(f"Unsupported source type: {source_type}") from exc
 

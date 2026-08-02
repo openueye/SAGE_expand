@@ -8,7 +8,7 @@ from ..foundation.artifact_versions import (
     CHECKPOINT_VERSION,
 )
 from ..foundation.config import GaussianInitializationConfig
-from ..foundation.contracts import FrameInputs, GaussianAppendBatch
+from ..foundation.contracts import FrameInputs, GaussianAppendBatch, SourceType
 from .geometry import backproject_depth
 from ..foundation.source_policy import SOURCE_POLICY_VERSION
 
@@ -282,13 +282,11 @@ class TrainableGaussians(nn.Module):
         # would otherwise force a CUDA sync on every append, and appends happen
         # on essentially every mapping commit.
         torch._assert_async(
-            torch.isin(batch.source_types, torch.tensor([0, 1, 2, 3, 4], dtype=torch.uint8, device=batch.source_types.device)).all(),
+            torch.isin(batch.source_types, torch.tensor(
+                [int(SourceType.LIDAR_CENTER), int(SourceType.LIDAR_FUSED), int(SourceType.SPNET_COMPLETED)],
+                dtype=torch.uint8, device=batch.source_types.device,
+            )).all(),
             "Append source_types contains an unsupported source ID",
-        )
-        combined = torch.cat((self.source_types, batch.source_types))
-        torch._assert_async(
-            ~self._mixes_lidar_families(combined),
-            "Append source_types would mix raw and SLAM LiDAR source families",
         )
         torch._assert_async(
             torch.isfinite(batch.source_confidences).all() & ((batch.source_confidences >= 0) & (batch.source_confidences <= 1)).all(),
@@ -326,12 +324,11 @@ class TrainableGaussians(nn.Module):
                 "Gaussian IDs must be strictly increasing",
             )
         torch._assert_async(
-            torch.isin(self.source_types, torch.tensor([0, 1, 2, 3, 4], dtype=torch.uint8, device=self.source_types.device)).all(),
+            torch.isin(self.source_types, torch.tensor(
+                [int(SourceType.LIDAR_CENTER), int(SourceType.LIDAR_FUSED), int(SourceType.SPNET_COMPLETED)],
+                dtype=torch.uint8, device=self.source_types.device,
+            )).all(),
             "Gaussian source_types contains an unsupported source ID",
-        )
-        torch._assert_async(
-            ~self._mixes_lidar_families(self.source_types),
-            "Gaussian source_types mix raw and SLAM LiDAR source families",
         )
         torch._assert_async(
             torch.isfinite(self.source_confidences).all() & ((self.source_confidences >= 0) & (self.source_confidences <= 1)).all(),
@@ -341,12 +338,6 @@ class TrainableGaussians(nn.Module):
             torch.stack([torch.isfinite(parameter).all() for parameter in self.parameters()]).all(),
             "Gaussian parameters must be finite",
         )
-
-    @staticmethod
-    def _mixes_lidar_families(source_types: torch.Tensor) -> torch.Tensor:
-        raw = torch.isin(source_types, torch.tensor([0, 1], dtype=torch.uint8, device=source_types.device)).any()
-        slam = torch.isin(source_types, torch.tensor([3, 4], dtype=torch.uint8, device=source_types.device)).any()
-        return raw & slam
 
     @staticmethod
     def _normalize_log_scales(log_scales: torch.Tensor) -> torch.Tensor:

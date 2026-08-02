@@ -632,7 +632,7 @@ def prepare_spnet_inputs(
         raise ValueError("SPNet RGB input must be float32 HxWx3")
     if not np.isfinite(color).all() or ((color < 0) | (color > 1)).any():
         raise ValueError("SPNet RGB input must be finite and within [0, 1]")
-    if raw.source_type not in {SourceType.LIDAR_RAW, SourceType.LIDAR_SLAM_CENTER}:
+    if raw.source_type != SourceType.LIDAR_CENTER:
         raise ValueError("SPNet input preparation requires profile center-anchor evidence")
     if raw.depth_m.shape != color.shape[:2]:
         raise ValueError("SPNet RGB and raw evidence must share image shape")
@@ -692,16 +692,9 @@ def predict_spnet_dense_evidence(
         evidence.source_type: evidence
         for evidence in frame.growth.evidences
     }
-    raw = by_source.get(SourceType.LIDAR_RAW)
-    if raw is None:
-        raw = by_source.get(SourceType.LIDAR_SLAM_CENTER)
+    raw = by_source.get(SourceType.LIDAR_CENTER)
     if raw is None:
         raise ValueError("SPNet prediction requires the profile center-anchor evidence")
-    if (
-        SourceType.LIDAR_RAW in by_source
-        and SourceType.LIDAR_SLAM_CENTER in by_source
-    ):
-        raise ValueError("SPNet prediction cannot mix raw and SLAM center anchors")
     inputs = prepare_spnet_inputs(
         frame.rgb,
         raw,
@@ -739,10 +732,11 @@ def predict_spnet_dense_evidence(
         raise ValueError("SPNet confidence must be within [0, 1]")
     confidence_map = np.where(valid, confidence_value, 0).astype(np.float32)
     return DepthEvidence(
-        SourceType.SPNET_BLIND,
+        SourceType.SPNET_COMPLETED,
         depth,
         valid,
         confidence_map,
+        raw.input_source_family,
     )
 
 
@@ -760,10 +754,7 @@ def build_spnet_blind_evidence(
         raise ValueError(
             "Restored SPNet depth must be float32 and match center evidence"
         )
-    pairs = {
-        SourceType.LIDAR_RAW: SourceType.LIDAR_FUSED5,
-        SourceType.LIDAR_SLAM_CENTER: SourceType.LIDAR_SLAM_FUSED5,
-    }
+    pairs = {SourceType.LIDAR_CENTER: SourceType.LIDAR_FUSED}
     if center.source_type not in pairs:
         raise ValueError(
             "SPNet blind exclusion requires center-anchor evidence"
@@ -771,6 +762,7 @@ def build_spnet_blind_evidence(
     if fused is not None and (
         fused.source_type != pairs[center.source_type]
         or fused.depth_m.shape != depth.shape
+        or fused.input_source_family != center.input_source_family
     ):
         raise ValueError("SPNet fused evidence is incompatible")
     confidence_value = float(confidence)
@@ -793,10 +785,11 @@ def build_spnet_blind_evidence(
         0.0,
     ).astype(np.float32)
     return DepthEvidence(
-        SourceType.SPNET_BLIND,
+        SourceType.SPNET_COMPLETED,
         depth,
         valid,
         confidence_map,
+        center.input_source_family,
     )
 
 
@@ -843,11 +836,8 @@ def predict_spnet_evidence_bundle(
         evidence.source_type: evidence
         for evidence in frame.growth.evidences
     }
-    center = by_source.get(SourceType.LIDAR_RAW)
-    fused_type = SourceType.LIDAR_FUSED5
-    if center is None:
-        center = by_source.get(SourceType.LIDAR_SLAM_CENTER)
-        fused_type = SourceType.LIDAR_SLAM_FUSED5
+    center = by_source.get(SourceType.LIDAR_CENTER)
+    fused_type = SourceType.LIDAR_FUSED
     if center is None:
         raise ValueError("SPNet prediction requires center-anchor evidence")
     restored = dense.depth_m.copy()

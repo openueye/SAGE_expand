@@ -6,8 +6,6 @@ from pathlib import Path
 from typing import Any
 
 from .source_policy import (
-    SLAM_SOURCE_DESCRIPTORS,
-    SLAM_SOURCE_NAMES,
     SOURCE_DESCRIPTORS,
     SOURCE_NAMES,
     materialize_source_policy,
@@ -215,7 +213,6 @@ class ResidualThreshold:
 @dataclass(frozen=True)
 class GrowthConfig:
     coverage_alpha_threshold: float = 0.85
-    rgb_residual_threshold: float = 0.05
     min_candidate_depth_m: float = 0.1
     max_candidate_depth_m: float = 200.0
     candidate_duplicate_3d_threshold_m: float = 0.05
@@ -240,9 +237,9 @@ class GrowthConfig:
             for descriptor in SOURCE_DESCRIPTORS
         }
         residual = self.residual_thresholds if self.residual_thresholds is not None else {
-            "LIDAR_RAW": ResidualThreshold(0.15, 0.03),
-            "LIDAR_FUSED5": ResidualThreshold(0.25, 0.05),
-            "SPNET_BLIND": ResidualThreshold(0.35, 0.07),
+            "LIDAR_CENTER": ResidualThreshold(0.15, 0.03),
+            "LIDAR_FUSED": ResidualThreshold(0.25, 0.05),
+            "SPNET_COMPLETED": ResidualThreshold(0.35, 0.07),
         }
         if not isinstance(confidence, dict):
             raise ValueError("confidence_thresholds must be an object")
@@ -250,14 +247,14 @@ class GrowthConfig:
             confidence = {str(name): float(value) for name, value in confidence.items()}
         except (TypeError, ValueError) as exc:
             raise ValueError("confidence_thresholds must contain numeric values") from exc
-        if (frozenset(confidence) not in {frozenset(SOURCE_NAMES), frozenset(SLAM_SOURCE_NAMES)}
+        if (frozenset(confidence) != frozenset(SOURCE_NAMES)
                 or any(not math.isfinite(value) or not 0 <= value <= 1 for value in confidence.values())):
             raise ValueError("confidence_thresholds must define all sources within [0, 1]")
-        if not isinstance(residual, dict) or frozenset(residual) not in {frozenset(SOURCE_NAMES), frozenset(SLAM_SOURCE_NAMES)}:
+        if not isinstance(residual, dict) or frozenset(residual) != frozenset(SOURCE_NAMES):
             raise ValueError("residual_thresholds must define all sources")
         if not all(isinstance(value, ResidualThreshold) for value in residual.values()):
             raise ValueError("residual_thresholds must contain threshold objects")
-        if not 0 <= self.coverage_alpha_threshold <= 1 or self.rgb_residual_threshold < 0:
+        if not 0 <= self.coverage_alpha_threshold <= 1:
             raise ValueError("Growth rendered gates are invalid")
         if self.min_candidate_depth_m <= 0 or self.max_candidate_depth_m < self.min_candidate_depth_m:
             raise ValueError("Candidate depth range is invalid")
@@ -270,7 +267,7 @@ class GrowthConfig:
         quotas = self.max_new_per_commit
         if quotas is not None:
             if (not isinstance(quotas, dict)
-                    or frozenset(quotas) not in {frozenset(SOURCE_NAMES), frozenset(SLAM_SOURCE_NAMES)}
+                    or frozenset(quotas) != frozenset(SOURCE_NAMES)
                     or any(type(value) is not int or value < 0 for value in quotas.values())):
                 raise ValueError(
                     "max_new_per_commit must define a non-negative integer quota for all sources, or be null"
@@ -296,7 +293,7 @@ class PruningConfig:
             values = {str(name): float(value) for name, value in values.items()}
         except (TypeError, ValueError) as exc:
             raise ValueError("opacity_thresholds must contain numeric values") from exc
-        if (frozenset(values) not in {frozenset(SOURCE_NAMES), frozenset(SLAM_SOURCE_NAMES)}
+        if (frozenset(values) != frozenset(SOURCE_NAMES)
                 or any(not math.isfinite(value) or value < 0 for value in values.values())):
             raise ValueError("opacity_thresholds must define all sources with non-negative values")
         object.__setattr__(self, "opacity_thresholds", dict(values))
@@ -440,14 +437,9 @@ class SageConfig:
             raise ValueError(f"Live config must use schema_version={SCHEMA_VERSION}")
         if self.model_root is not None:
             object.__setattr__(self, "model_root", Path(self.model_root).expanduser().resolve())
-        descriptors = (
-            SLAM_SOURCE_DESCRIPTORS
-            if self.scene.enabled_depth_sources[0] == "LIDAR_SLAM_CENTER"
-            else SOURCE_DESCRIPTORS
-        )
-        confidence = materialize_source_policy(self.growth.confidence_thresholds, descriptors)
-        residuals = materialize_source_policy(self.growth.residual_thresholds, descriptors)
-        opacity = materialize_source_policy(self.pruning.opacity_thresholds, descriptors)
+        confidence = materialize_source_policy(self.growth.confidence_thresholds, SOURCE_DESCRIPTORS)
+        residuals = materialize_source_policy(self.growth.residual_thresholds, SOURCE_DESCRIPTORS)
+        opacity = materialize_source_policy(self.pruning.opacity_thresholds, SOURCE_DESCRIPTORS)
         if confidence != self.growth.confidence_thresholds or residuals != self.growth.residual_thresholds:
             object.__setattr__(self, "growth", replace(
                 self.growth,
