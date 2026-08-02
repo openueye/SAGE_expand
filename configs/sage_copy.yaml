@@ -13,37 +13,46 @@ spnet:
   model_id: spnet-large-300
   depth_scale_m: 200.0
   confidence: 0.4
-  sample_stride: 8
+  # Approximate LIC2's one candidate per 10x10 completion patch.
+  sample_stride: 10
 
 mapping:
   map_every: 5
   keyframe_every: 5
-  iterations: 90
+  # LIC2 optimizes up to 100 sampled training views per keyframe.
+  iterations: 100
   prune_every: 30
-  prune_stop_after: 90
+  # LIC2's Gaussian-LIC growth path has no pruning stage.
+  prune_stop_after: 0
   learning_rates:
     means3d: 0.00016
     colors: 0.0025
     opacity_logits: 0.05
     log_scales: 0.001
     rotations: 0.001
-  initial_opacity: 0.5
+  initial_opacity: 0.1
   scale_clamp_min: 1e-4
-  initial_scale_anisotropy: [0.95, 1.05, 1.20]
+  initial_scale_anisotropy: [1.0, 1.0, 1.0]
   growth:
-    coverage_alpha_threshold: 0.85
-    rgb_residual_threshold: 0.05
-    min_candidate_depth_m: 0.1
-    max_candidate_depth_m: 80.0
-    candidate_duplicate_3d_threshold_m: 0.05
+    # LIC2 inserts a point whenever the projected pixel has alpha < 0.99.
+    coverage_alpha_threshold: 0.99
+    # Zero makes the RGB part of the SAGE coverage gate effectively permissive
+    # for ordinary floating-point renders; exact zero residuals remain blocked.
+    rgb_residual_threshold: 0.0
+    min_candidate_depth_m: 0.0001
+    max_candidate_depth_m: 20.0
+    # Make SAGE's 3-D candidate deduplication negligible; it cannot be disabled
+    # completely through config because the schema requires a positive value.
+    candidate_duplicate_3d_threshold_m: 0.00000001
     confidence_thresholds:
       LIDAR_SLAM_CENTER: 0.0
-      LIDAR_SLAM_FUSED5: 0.5
-      SPNET_BLIND: 0.25
+      LIDAR_SLAM_FUSED5: 0.0
+      SPNET_BLIND: 0.0
     residual_thresholds:
-      LIDAR_SLAM_CENTER: {absolute_m: 0.15, relative: 0.03}
-      LIDAR_SLAM_FUSED5: {absolute_m: 0.25, relative: 0.05}
-      SPNET_BLIND: {absolute_m: 0.35, relative: 0.07}
+      # Disable SAGE's additional geometry-residual gate; LIC2 uses alpha only.
+      LIDAR_SLAM_CENTER: {absolute_m: 1000000000.0, relative: 1000000000.0}
+      LIDAR_SLAM_FUSED5: {absolute_m: 1000000000.0, relative: 1000000000.0}
+      SPNET_BLIND: {absolute_m: 1000000000.0, relative: 1000000000.0}
   pruning:
     opacity_thresholds:
       LIDAR_SLAM_CENTER: 0.05
@@ -54,10 +63,12 @@ mapping:
   loss:
     image_weight: 1.0
     ssim_weight: 0.2
-    depth_weight: 0.05
-    depth_coverage_weight: 0.05
-    alpha_support: 0.85
-    depth_coverage_threshold: 0.1
+    # Match LIC2's default RGB/depth balance and remove SAGE-only coverage loss.
+    depth_weight: 0.005
+    depth_coverage_weight: 0.0
+    # Approximate LIC2's binary rendered-depth validity mask.
+    alpha_support: 0.000001
+    depth_coverage_threshold: 0.85
     epsilon: 0.000001
 
 refinement:
