@@ -54,10 +54,10 @@ mapping:
   loss:
     image_weight: 1.0
     ssim_weight: 0.2
-    depth_weight: 0.005
-    depth_coverage_weight: 0.0
+    depth_weight: 0.05
+    depth_coverage_weight: 0.05
     alpha_support: 0.85
-    depth_coverage_threshold: 0.85
+    depth_coverage_threshold: 0.1
     epsilon: 0.000001
 
 refinement:
