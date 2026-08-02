@@ -224,6 +224,10 @@ class GrowthConfig:
     depth_policy: str = ALPHA_NORMALIZED_DEPTH_POLICY
     frame_bias_threshold: ResidualThreshold = ResidualThreshold(0.10, 0.02)
     frame_bias_min_overlap_px: int = 50
+    # 每个 mapping commit 每个源允许接受的候选上限；None 表示不限量（历史行为）。
+    # 必须按源给配额而不是给一个全局总量：共享总量时优先级会退化成词典序，
+    # 低优先级源（SPNet）会被 LiDAR 吃光额度而饿死。
+    max_new_per_commit: dict[str, int] | None = None
 
     def __post_init__(self) -> None:
         if self.depth_policy != ALPHA_NORMALIZED_DEPTH_POLICY:
@@ -263,6 +267,14 @@ class GrowthConfig:
             raise ValueError("frame_bias_threshold must be a ResidualThreshold")
         if type(self.frame_bias_min_overlap_px) is not int or self.frame_bias_min_overlap_px < 1:
             raise ValueError("frame_bias_min_overlap_px must be a positive integer")
+        quotas = self.max_new_per_commit
+        if quotas is not None:
+            if (not isinstance(quotas, dict)
+                    or frozenset(quotas) not in {frozenset(SOURCE_NAMES), frozenset(SLAM_SOURCE_NAMES)}
+                    or any(type(value) is not int or value < 1 for value in quotas.values())):
+                raise ValueError(
+                    "max_new_per_commit must define a positive integer quota for all sources, or be null"
+                )
         object.__setattr__(self, "confidence_thresholds", dict(confidence))
         object.__setattr__(self, "residual_thresholds", dict(residual))
 

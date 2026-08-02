@@ -267,7 +267,7 @@ class SageMethodConfig:
         return value
 
     def _structure_parts(self) -> dict[str, object]:
-        growth = _section(
+        growth = _section_with_optional(
             self.mapping,
             "growth",
             {
@@ -279,6 +279,7 @@ class SageMethodConfig:
                 "confidence_thresholds",
                 "residual_thresholds",
             },
+            {"max_new_per_commit"},
         )
         pruning = _section(
             self.mapping,
@@ -323,6 +324,9 @@ class SageMethodConfig:
                     for name, threshold in residuals.items()
                 },
                 depth_policy=ALPHA_NORMALIZED_DEPTH_POLICY,
+                # 读原始 payload 而不是 growth[...]，避开 _section_with_optional 的
+                # 0.0 缺省填充：不写该键表示不限量，写了就必须是完整的每源配额。
+                max_new_per_commit=self.mapping["growth"].get("max_new_per_commit"),
             ),
             "pruning": PruningConfig(**pruning),
             "loss": MappingLossConfig(

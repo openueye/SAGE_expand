@@ -21,6 +21,22 @@ class GrowthStats:
 
 
 @dataclass(frozen=True)
+class FrameNeeds:
+    """哪些像素需要新增高斯——只由渲染结果与目标图像决定，不知道有几个证据源。
+
+    coverage 与 conflict 是动机不同的两条通道，必须分开保留：合并成一条 bool
+    之后就无法回答"这个候选是补空洞还是修冲突"，也无法量化某个分量挡掉了多少。
+    conflict 依赖逐源的深度与容差，因此只在这里提供它的公共部分。
+    """
+
+    target_rgb: torch.Tensor
+    coverage: torch.Tensor          # alpha 不足且 RGB 无法解释 —— 需要补面
+    low_alpha: torch.Tensor         # 仅 alpha 不足，coverage 的上界，用于归因
+    rendered_depth: torch.Tensor    # alpha 归一化深度
+    rendered_depth_valid: torch.Tensor
+
+
+@dataclass(frozen=True)
 class GrowthResult:
     batch: GaussianAppendBatch
     stats: GrowthStats
@@ -65,6 +81,84 @@ class GrowthBuilder:
             device=self.device,
         )
 
+    def _frame_needs(self, frame: FrameInputs, rendered: RenderOutput) -> FrameNeeds:
+        """L1：由渲染结果推出帧级需求。纯函数，与证据源无关。"""
+        target_rgb = torch.as_tensor(frame.rgb, dtype=torch.float32, device=self.device)
+        rgb_residual = (rendered.rgb - target_rgb).abs().mean(dim=-1)
+        rendered_depth = alpha_normalized_depth(rendered.accumulated_depth, rendered.alpha)
+        low_alpha = torch.isfinite(rendered.alpha) & (rendered.alpha < self.config.coverage_alpha_threshold)
+        rgb_unexplained = torch.isfinite(rendered.rgb).all(dim=-1) & (rgb_residual > self.config.rgb_residual_threshold)
+        return FrameNeeds(
+            target_rgb=target_rgb,
+            coverage=low_alpha & rgb_unexplained,
+            low_alpha=low_alpha,
+            rendered_depth=rendered_depth,
+            rendered_depth_valid=torch.isfinite(rendered_depth) & (rendered_depth > 0),
+        )
+
+    def _conflict_need(
+        self,
+        needs: FrameNeeds,
+        depth: torch.Tensor,
+        valid: torch.Tensor,
+        source_name: str,
+    ) -> torch.Tensor:
+        """L1 的逐源分量：已覆盖但渲染深度与该源证据显著冲突。"""
+        residual = source_policy_value(self.config.residual_thresholds, source_name)
+        tolerance = torch.maximum(torch.full_like(depth, residual.absolute_m), residual.relative * depth)
+        return needs.rendered_depth_valid & valid & ((needs.rendered_depth - depth).abs() > tolerance)
+
+    @staticmethod
+    def _arbitrate_2d(
+        gated: dict[int, tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
+        descriptors: tuple,
+        stats: dict[str, dict[str, object]],
+    ) -> dict[int, torch.Tensor]:
+        """L2：同一像素只允许一个源播种，按显式声明的优先级裁决。
+
+        优先级来自 descriptor.priority，不再是"谁先被循环到谁占坑"的副作用；
+        返回的字典也按优先级排序，使下游 3D 去重的"先到先得"跟随同一套顺序。
+        """
+        keeps: dict[int, torch.Tensor] = {}
+        occupied: torch.Tensor | None = None
+        for descriptor in sorted(descriptors, key=lambda item: item.priority):
+            entry = gated.get(int(descriptor.source_type))
+            if entry is None:
+                continue
+            gate = entry[0]
+            if occupied is None:
+                occupied = torch.zeros_like(gate)
+            keep = gate & ~occupied
+            _increment_rejection(stats[descriptor.name], "duplicate_2d", int((gate & occupied).sum()))
+            occupied |= keep
+            keeps[int(descriptor.source_type)] = keep
+        return keeps
+
+    def _apply_quota(
+        self,
+        source_types: torch.Tensor,
+        descriptors: tuple,
+        stats: dict[str, dict[str, object]],
+    ) -> torch.Tensor | None:
+        """L2：每源独立配额。返回保留掩码，None 表示不限量。
+
+        配额必须逐源独立：共享一个总量时先填的源会吃光额度，把低优先级源饿死
+        （实测 SPNet 接受量 -97%、PSNR -3.1dB）。
+        """
+        quotas = self.config.max_new_per_commit
+        if quotas is None:
+            return None
+        within_quota = torch.zeros_like(source_types, dtype=torch.bool)
+        for descriptor in descriptors:
+            rows = torch.nonzero(source_types == int(descriptor.source_type), as_tuple=False).flatten()
+            quota = int(source_policy_value(quotas, descriptor.name))
+            if int(rows.numel()) > quota:
+                _increment_rejection(stats[descriptor.name], "quota_exhausted", int(rows.numel()) - quota)
+                # 均匀抽样而不是按光栅顺序截断，否则超额的源只会保留图像上半部
+                rows = rows[torch.linspace(0, int(rows.numel()) - 1, quota, device=rows.device).long()]
+            within_quota[rows] = True
+        return within_quota
+
     def build(
         self,
         frame: FrameInputs,
@@ -79,18 +173,9 @@ class GrowthBuilder:
             raise ValueError("GrowthInputs evidences must match frame shape")
         if tuple(rendered.accumulated_depth.shape) != expected or tuple(rendered.alpha.shape) != expected or tuple(rendered.rgb.shape) != (*expected, 3):
             raise ValueError("Rendered output dimensions do not match frame")
-        target_rgb = torch.as_tensor(frame.rgb, dtype=torch.float32, device=self.device)
-        rgb_residual = (rendered.rgb - target_rgb).abs().mean(dim=-1)
-        rendered_depth = alpha_normalized_depth(
-            rendered.accumulated_depth,
-            rendered.alpha,
-        )
-        rendered_depth_valid = torch.isfinite(rendered_depth) & (rendered_depth > 0)
-        coverage_gate = torch.isfinite(rendered.alpha) & (rendered.alpha < self.config.coverage_alpha_threshold)
-        coverage_gate &= torch.isfinite(rendered.rgb).all(dim=-1) & (rgb_residual > self.config.rgb_residual_threshold)
+        needs = self._frame_needs(frame, rendered)
         stats = self._empty_stats(active_descriptors)
-        proposals: list[tuple[SourceType, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]] = []
-        occupied = torch.zeros(expected, dtype=torch.bool, device=self.device)
+        gated: dict[int, tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = {}
         reference_depth: torch.Tensor | None = None
         reference_base: torch.Tensor | None = None
         for evidence in growth_inputs.evidences:
@@ -123,22 +208,23 @@ class GrowthBuilder:
             )
             confidence_valid = in_range & torch.isfinite(confidence) & (confidence >= confidence_threshold)
             _increment_rejection(source_stats, "below_confidence", int((in_range & ~confidence_valid).sum()))
-            residual = source_policy_value(self.config.residual_thresholds, descriptor.name)
-            tolerance = torch.maximum(torch.full_like(depth, residual.absolute_m), residual.relative * depth)
-            geometry_gate = rendered_depth_valid & valid & ((rendered_depth - depth).abs() > tolerance)
-            gate = confidence_valid & (coverage_gate | geometry_gate)
-            _increment_rejection(source_stats, "gate_blocked", int((confidence_valid & ~gate).sum()))
-            if not bool(gate.any()):
-                continue
-            suppressed = occupied
-            local_keep = gate & ~suppressed
-            _increment_rejection(source_stats, "duplicate_2d", int((gate & suppressed).sum()))
-            occupied |= local_keep
-            pixels = torch.nonzero(local_keep, as_tuple=False)
+            conflict = self._conflict_need(needs, depth, valid, descriptor.name)
+            gate = confidence_valid & (needs.coverage | conflict)
+            # 把旧的单一 gate_blocked 拆成互斥两类，便于量化 RGB 残差项挡掉了多少
+            # 本该补洞的低 alpha 像素。两者之和仍等于原先的 gate_blocked。
+            blocked = confidence_valid & ~gate
+            _increment_rejection(source_stats, "rgb_residual_suppressed", int((blocked & needs.low_alpha).sum()))
+            _increment_rejection(source_stats, "gate_blocked", int((blocked & ~needs.low_alpha).sum()))
+            gated[int(evidence.source_type)] = (gate, depth, confidence)
+
+        proposals: list[tuple[SourceType, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]] = []
+        for source_type, keep in self._arbitrate_2d(gated, active_descriptors, stats).items():
+            pixels = torch.nonzero(keep, as_tuple=False)
             if pixels.numel() == 0:
                 continue
-            points, _, proposal_depth = backproject_depth(depth, frame.intrinsics, frame.pose, local_keep)
-            proposals.append((evidence.source_type, pixels, points, proposal_depth, confidence[local_keep]))
+            depth, confidence = gated[source_type][1], gated[source_type][2]
+            points, _, proposal_depth = backproject_depth(depth, frame.intrinsics, frame.pose, keep)
+            proposals.append((SourceType(source_type), pixels, points, proposal_depth, confidence[keep]))
 
         if not proposals:
             return GrowthResult(_empty_batch(self.device), GrowthStats(self._finish_stats(stats)))
@@ -164,11 +250,18 @@ class GrowthBuilder:
         points = points[keep]
         camera_depths = camera_depths[keep]
         confidences = confidences[keep]
+        within_quota = self._apply_quota(source_types, active_descriptors, stats)
+        if within_quota is not None:
+            source_types = source_types[within_quota]
+            pixels = pixels[within_quota]
+            points = points[within_quota]
+            camera_depths = camera_depths[within_quota]
+            confidences = confidences[within_quota]
         for descriptor in active_descriptors:
             source_type = descriptor.source_type
             name = descriptor.name
             stats[name]["accepted"] = int((source_types == int(source_type)).sum())
-        colors = target_rgb[pixels[:, 0], pixels[:, 1]]
+        colors = needs.target_rgb[pixels[:, 0], pixels[:, 1]]
         focal = (frame.intrinsics.fx + frame.intrinsics.fy) * 0.5
         base_scales = (camera_depths / focal).clamp_min(self.scale_clamp_min)
         batch = GaussianAppendBatch(
