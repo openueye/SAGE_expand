@@ -23,7 +23,7 @@ mapping:
   prune_stop_after: 90
   learning_rates:
     means3d: 0.00016
-    colors: 0.005
+    colors: 0.0025
     opacity_logits: 0.05
     log_scales: 0.001
     rotations: 0.001
@@ -54,7 +54,7 @@ mapping:
   loss:
     image_weight: 1.0
     ssim_weight: 0.2
-    depth_weight: 0.000000000001
+    depth_weight: 0.005
     depth_coverage_weight: 0.0
     alpha_support: 0.85
     depth_coverage_threshold: 0.85
@@ -68,7 +68,7 @@ refinement:
   log_scales_learning_rate: 0.0001
   rotations_learning_rate: 0.0001
   opacity_anchor_weight: 0.1
-  lidar_depth_weight: 0.000000000001
+  lidar_depth_weight: 0.005
   dense_normal_weight: 0.05
   dense_normal_edge_weight_gamma: 10.0
   dense_normal_alpha_support: 0.85
