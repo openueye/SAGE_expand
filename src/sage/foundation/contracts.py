@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum, IntEnum
+from enum import IntEnum
 
 import numpy as np
 import torch
@@ -13,12 +13,6 @@ class SourceType(IntEnum):
     LIDAR_CENTER = 0
     LIDAR_FUSED = 1
     SPNET_COMPLETED = 2
-
-
-class InputSourceFamily(str, Enum):
-    """Identity of the external input profile, not a Gaussian row role."""
-
-    LIDAR_WORLD = "LIDAR_WORLD"
 
 
 INVALID_SOURCE_TYPE = np.uint8(255)
@@ -72,7 +66,6 @@ class MappingObservation:
     depth_m: np.ndarray
     source_types: np.ndarray
     confidences: np.ndarray
-    input_source_family: InputSourceFamily | None = None
 
     def __post_init__(self) -> None:
         depth = np.asarray(self.depth_m)
@@ -98,17 +91,9 @@ class MappingObservation:
         ])
         if not valid_sources.all():
             raise ValueError("Mapping source_types contains an unsupported source ID")
-        if not isinstance(self.input_source_family, (InputSourceFamily, type(None))):
-            raise ValueError("Mapping input_source_family has an invalid type")
-        if np.any(sources != INVALID_SOURCE_TYPE) and self.input_source_family is None:
-            raise ValueError("Valid mapping pixels require an input_source_family")
         invalid = sources == INVALID_SOURCE_TYPE
         if np.any(invalid & ((depth != 0) | (confidences != 0))):
             raise ValueError("Invalid mapping pixels must have zero depth and confidence")
-
-    @property
-    def source_family(self) -> str | None:
-        return self.input_source_family.value if self.input_source_family is not None else None
 
 
 @dataclass(frozen=True)
@@ -117,7 +102,6 @@ class DepthEvidence:
     depth_m: np.ndarray
     valid_mask: np.ndarray
     confidence: np.ndarray
-    input_source_family: InputSourceFamily
 
     def __post_init__(self) -> None:
         depth = np.asarray(self.depth_m)
@@ -125,8 +109,6 @@ class DepthEvidence:
         confidence = np.asarray(self.confidence)
         if not isinstance(self.source_type, SourceType):
             raise ValueError("DepthEvidence source_type must be a SourceType")
-        if not isinstance(self.input_source_family, InputSourceFamily):
-            raise ValueError("DepthEvidence input_source_family must be an InputSourceFamily")
         if depth.dtype != np.float32 or confidence.dtype != np.float32 or valid.dtype != np.bool_:
             raise ValueError("DepthEvidence arrays must be float32, bool, and float32")
         if depth.ndim != 2:
@@ -226,45 +208,9 @@ class GrowthInputs:
         }
         if source_types != sorted(source_types, key=priorities.__getitem__):
             raise ValueError("GrowthInputs must be sorted by source priority")
-        families = {evidence.input_source_family for evidence in self.evidences}
-        if len(families) > 1:
-            raise ValueError("GrowthInputs cannot mix input source families")
         shapes = {evidence.depth_m.shape for evidence in self.evidences}
         if len(shapes) > 1:
             raise ValueError("GrowthInputs evidences must share the same shape")
-
-    @property
-    def source_family(self) -> str | None:
-        families = {evidence.input_source_family for evidence in self.evidences}
-        return next(iter(families)).value if families else None
-
-
-@dataclass(frozen=True)
-class FrameInputs:
-    index: int
-    stem: str
-    timestamp_ns: int
-    intrinsics: CameraIntrinsics
-    pose: Pose
-    rgb: np.ndarray
-    mapping: MappingObservation
-    growth: GrowthInputs
-
-    def __post_init__(self) -> None:
-        expected = (self.intrinsics.height, self.intrinsics.width)
-        if self.rgb.shape != (*expected, 3) or self.rgb.dtype != np.float32:
-            raise ValueError("Frame RGB must be float32 HxWx3 matching intrinsics")
-        if not np.isfinite(self.rgb).all() or ((self.rgb < 0) | (self.rgb > 1)).any():
-            raise ValueError("Frame RGB must be finite and within [0, 1]")
-        _validate_image_shape("Mapping depth", self.mapping.depth_m, expected)
-        for evidence in self.growth.evidences:
-            _validate_image_shape("Growth evidence", evidence.depth_m, expected)
-        if (
-            self.mapping.source_family is not None
-            and self.growth.source_family is not None
-            and self.mapping.source_family != self.growth.source_family
-        ):
-            raise ValueError("Frame mapping and growth cannot use different LiDAR source families")
 
 
 @dataclass(frozen=True)
