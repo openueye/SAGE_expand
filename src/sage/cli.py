@@ -35,6 +35,11 @@ def _add_input_arguments(parser: argparse.ArgumentParser) -> None:
         type=Path,
         help="optional Prepared Scene recording for --rosbag",
     )
+    parser.add_argument(
+        "--preparation-profile",
+        default="odin1-lidar-world-native-v1",
+        help="ROSBAG preparation_profile to use with --rosbag (default: odin1-lidar-world-native-v1)",
+    )
 
 
 def _source(args: argparse.Namespace, parser: argparse.ArgumentParser) -> SageInput:
@@ -46,6 +51,7 @@ def _source(args: argparse.Namespace, parser: argparse.ArgumentParser) -> SageIn
             root=args.rosbag,
             calibration=args.calibration,
             write_through=args.write_through,
+            preparation_profile=args.preparation_profile,
         )
     if args.calibration is not None or args.write_through is not None:
         parser.error(

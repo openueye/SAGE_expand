@@ -76,6 +76,7 @@ def formal_train_command(
     data_root: Path | None = None,
     calibration: Path | None = None,
     write_through: Path | None = None,
+    preparation_profile: str = "odin1-lidar-world-native-v1",
 ) -> list[str]:
     if input_format not in {"prepared-scene", "odin-rosbag"}:
         raise ValueError("input_format must be prepared-scene or odin-rosbag")
@@ -108,6 +109,7 @@ def formal_train_command(
         command.extend(["--calibration", str(Path(calibration).resolve())])
     if write_through is not None:
         command.extend(["--write-through", str(Path(write_through).resolve())])
+    command.extend(["--preparation-profile", preparation_profile])
     return command
 
 
@@ -252,8 +254,8 @@ def _valid_formal_train_command(
     data_root = Path(options["--data-root"]) if "--data-root" in options else None
     calibration = Path(options["--calibration"]) if "--calibration" in options else None
     write_through = Path(options["--write-through"]) if "--write-through" in options else None
-    if set(options) - {
-        "--input-format", "--data-root", "--calibration", "--write-through",
+    if "--preparation-profile" not in options or set(options) - {
+        "--input-format", "--data-root", "--calibration", "--write-through", "--preparation-profile",
     }:
         return False
     try:
@@ -265,6 +267,7 @@ def _valid_formal_train_command(
             data_root=data_root,
             calibration=calibration,
             write_through=write_through,
+            preparation_profile=options["--preparation-profile"],
         )
     except ValueError:
         return False

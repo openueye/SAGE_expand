@@ -11,19 +11,10 @@ REPLAY_RECEIPT_SCHEMA = "prepared-scene-replay-v1"
 MATERIALIZED_RECEIPT_SCHEMA = "materialized-prepared-scene-v1"
 STREAM_RECEIPT_SCHEMA = "fixed-lag-stream-v1"
 
-_STREAM_SOURCE_CONTRACTS = {
-    "LIDAR_RAW": {
-        "topic": "/odin1/cloud_raw",
-        "center_source_type": "LIDAR_RAW",
-        "fused_source_type": "LIDAR_FUSED5",
-        "cloud_frame_id": "odin1_base_link",
-    },
-    "SLAM_WORLD": {
-        "topic": "/odin1/cloud_slam",
-        "center_source_type": "LIDAR_SLAM_CENTER",
-        "fused_source_type": "LIDAR_SLAM_FUSED5",
-        "cloud_frame_id": "odom",
-    },
+_REQUIRED_STREAM_TOPIC_TYPES = {
+    "sensor_msgs/msg/CompressedImage",
+    "nav_msgs/msg/Odometry",
+    "sensor_msgs/msg/PointCloud2",
 }
 
 
@@ -182,23 +173,17 @@ def _validate_stream_receipt(
         ):
             raise ValueError("Disabled streaming write-through evidence must be null")
     producer_identity = receipt.get("producer_identity")
+    if receipt.get("source_mode") != "LIDAR_WORLD":
+        raise ValueError("Fixed-lag completion receipt source semantics are invalid")
     input_contract = producer_identity.get("input_contract") if isinstance(producer_identity, dict) else None
     topics = input_contract.get("topics") if isinstance(input_contract, dict) else None
-    if not isinstance(topics, dict) or not topics:
+    if not isinstance(topics, dict) or len(topics) != 3:
         raise ValueError("Fixed-lag completion receipt lacks observed topic identities")
-    source_contract = _STREAM_SOURCE_CONTRACTS.get(str(receipt["source_mode"]))
-    if source_contract is None:
-        raise ValueError("Fixed-lag completion receipt source semantics are invalid")
-    source_topic = source_contract["topic"]
-    required_topics = {"/odin1/image/compressed", "/odin1/odometry", source_topic}
-    if not required_topics.issubset(topics):
-        raise ValueError("Fixed-lag completion receipt lacks required topic observations")
-    for topic in required_topics:
-        observed = topics[topic]
+    for topic, observed in topics.items():
         if (
             not isinstance(observed, dict)
             or not isinstance(observed.get("type"), str)
-            or not isinstance(observed.get("serialization"), str)
+            or observed.get("serialization") != "cdr"
             or type(observed.get("message_count")) is not int
             or observed["message_count"] < 1
             or not isinstance(observed.get("header_timestamp_range_ns"), list)
@@ -207,25 +192,19 @@ def _validate_stream_receipt(
             or observed["header_timestamp_range_ns"][0] > observed["header_timestamp_range_ns"][1]
         ):
             raise ValueError(f"Fixed-lag topic observation is invalid: {topic}")
-    expected_topic_types = {
-        "/odin1/image/compressed": "sensor_msgs/msg/CompressedImage",
-        "/odin1/odometry": "nav_msgs/msg/Odometry",
-        source_topic: "sensor_msgs/msg/PointCloud2",
-    }
-    if any(
-        topics[topic]["type"] != expected_type
-        or topics[topic]["serialization"] != "cdr"
-        for topic, expected_type in expected_topic_types.items()
-    ):
+    if {observed["type"] for observed in topics.values()} != _REQUIRED_STREAM_TOPIC_TYPES:
         raise ValueError("Fixed-lag completion receipt topic source semantics are invalid")
     source_layout = input_contract.get("source_layout")
     odometry_frames = input_contract.get("odometry_frames")
     if (
         not isinstance(source_layout, dict)
-        or source_layout.get("frame_ids") != [source_contract["cloud_frame_id"]]
+        or source_layout.get("frame_ids") != ["odom"]
         or not isinstance(odometry_frames, dict)
         or odometry_frames.get("frame_ids") != ["odom"]
-        or odometry_frames.get("child_frame_ids") != ["odin1_base_link"]
+        or not isinstance(odometry_frames.get("child_frame_ids"), list)
+        or len(odometry_frames["child_frame_ids"]) != 1
+        or not isinstance(odometry_frames["child_frame_ids"][0], str)
+        or not odometry_frames["child_frame_ids"][0]
     ):
         raise ValueError("Fixed-lag completion receipt frame source semantics are invalid")
     integer_metrics = {
@@ -271,8 +250,8 @@ def _validate_stream_receipt(
         ):
             raise ValueError("Fixed-lag completion receipt frame association is invalid")
         if (
-            record["center_source_type"] != source_contract["center_source_type"]
-            or record["fused_source_type"] != source_contract["fused_source_type"]
+            record["center_source_type"] != "LIDAR_WORLD_CENTER"
+            or record["fused_source_type"] != "LIDAR_WORLD_FUSED5"
         ):
             raise ValueError("Fixed-lag completion receipt source semantics are invalid")
         _validate_normalization_receipt(
@@ -313,30 +292,12 @@ def _validate_normalization_receipt(
 ) -> None:
     if not isinstance(value, dict):
         raise ValueError("Fixed-lag completion receipt normalization source semantics are invalid")
-    if source_mode == "SLAM_WORLD":
-        if (
-            value.get("mode") != "direct-world"
-            or value.get("frame_id") != "odom"
-            or value.get("point_time_policy") != "unavailable-in-topic"
-            or value.get("producer_processing") != "opaque-recorded-output"
-            or not isinstance(value.get("image_pose_bracket"), dict)
-        ):
-            raise ValueError(
-                "Fixed-lag completion receipt normalization source semantics are invalid"
-            )
-        return
-    if source_mode == "LIDAR_RAW" and (
-        value.get("mode") != "per-point-offset-time"
-        or value.get("T_base_from_lidar") != "identity"
-        or value.get("T_base_from_lidar_confirmed") is not True
-        or value.get("header_reference_assumption") != "scan-start"
-        or value.get("offset_time_semantics_confirmed") is not True
-        or value.get("offset_time_unit_assumption") != "second"
+    if source_mode != "LIDAR_WORLD" or (
+        value.get("mode") != "direct-world"
+        or value.get("frame_id") != "odom"
+        or value.get("point_time_policy") != "unavailable-in-topic"
+        or value.get("producer_processing") != "opaque-recorded-output"
         or not isinstance(value.get("image_pose_bracket"), dict)
-        or not isinstance(value.get("point_pose_boundary_brackets"), list)
-        or len(value["point_pose_boundary_brackets"]) != 2
-        or not isinstance(value.get("point_timestamp_range_ns"), list)
-        or len(value["point_timestamp_range_ns"]) != 2
     ):
         raise ValueError(
             "Fixed-lag completion receipt normalization source semantics are invalid"

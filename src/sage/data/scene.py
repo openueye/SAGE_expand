@@ -190,11 +190,9 @@ class PreparedScene:
         manifest = self._validate_contract()
         source = manifest["source"]
         assert isinstance(source, dict)
-        input_source_family = (
-            InputSourceFamily.SLAM_WORLD
-            if source["center_source_type"].startswith("LIDAR_SLAM")
-            else InputSourceFamily.LIDAR_RAW
-        )
+        if not source["center_source_type"].startswith("LIDAR_WORLD"):
+            raise ValueError("Prepared Scene center_source_type must be a LiDAR world family")
+        input_source_family = InputSourceFamily.LIDAR_WORLD
         center_source_type = SourceType.LIDAR_CENTER
         fused_source_type = SourceType.LIDAR_FUSED
         fused5_enabled = source["fused_source_type"] in self.config.enabled_depth_sources
@@ -329,8 +327,7 @@ class PreparedScene:
         )
         if self.config.enabled_depth_sources not in expected_sources:
             raise ValueError("Configured depth sources do not match Prepared Scene source family")
-        configured_mode = "SLAM_WORLD" if self.config.enabled_depth_sources[0] == "LIDAR_SLAM_CENTER" else "LIDAR_RAW"
-        if source["mode"] != configured_mode:
+        if self.config.enabled_depth_sources[0] != "LIDAR_WORLD_CENTER" or source["mode"] != "LIDAR_WORLD":
             raise ValueError("Prepared Scene source mode does not match configured source family")
         if self.config.scene_dir != (self.config.prepared_scene_dir / "scene").resolve():
             raise ValueError("Prepared Scene v2 scene_dir must name the manifest scene artifact root")

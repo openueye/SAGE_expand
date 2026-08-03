@@ -17,9 +17,9 @@ import PIL
 
 from .decoder import (
     build_fishpoly_rectification_maps,
+    build_pinhole_rectification_maps,
     build_sampler,
     decode_compressed_image,
-    decode_raw_cloud,
     decode_slam_cloud,
     parse_camera_lidar_calibration,
     parse_compressed_image,
@@ -34,27 +34,25 @@ from .geometry import (
     CenteredFiveProjector,
     CenteredFiveWindow,
     FinalizedSensorFrame,
+    LidarWorldNormalizer,
     PoseSample,
     PoseTrack,
     ProjectedCenter,
-    RawWorldNormalizer,
     RejectedCenter,
     RejectedSensorFrame,
-    SlamWorldNormalizer,
     WorldCloudEvidence,
 )
 from .profiles import PreparationProfile, profile_for_name
 from .writer import sha256_file
 
 
-IMAGE_TOPIC = "/odin1/image/compressed"
-ODOMETRY_TOPIC = "/odin1/odometry"
-EXPECTED_TOPIC_IDENTITIES = {
-    IMAGE_TOPIC: ("sensor_msgs/msg/CompressedImage", "cdr"),
-    ODOMETRY_TOPIC: ("nav_msgs/msg/Odometry", "cdr"),
-    "/odin1/cloud_raw": ("sensor_msgs/msg/PointCloud2", "cdr"),
-    "/odin1/cloud_slam": ("sensor_msgs/msg/PointCloud2", "cdr"),
-}
+def _expected_topic_identities(profile: PreparationProfile) -> dict[str, tuple[str, str]]:
+    """Message type/serialization each profile topic must declare, by role (device-agnostic)."""
+    return {
+        profile.source.image_topic: ("sensor_msgs/msg/CompressedImage", "cdr"),
+        profile.source.odometry_topic: ("nav_msgs/msg/Odometry", "cdr"),
+        profile.source.topic: ("sensor_msgs/msg/PointCloud2", "cdr"),
+    }
 
 
 def _bag_shards(root: Path, metadata: Path) -> tuple[Path, ...]:
@@ -76,20 +74,10 @@ def _bag_shards(root: Path, metadata: Path) -> tuple[Path, ...]:
         return shards
     shards = tuple(sorted(root.glob("*.db3")))
     if not shards:
-        raise ValueError("Odin1 ROS bag folder must contain at least one .db3 shard")
+        raise ValueError("ROS bag folder must contain at least one .db3 shard")
     return shards
 EXPECTED_POINT_LAYOUTS = {
-    "LIDAR_RAW": {
-        "fields": (
-            ("x", 0, 7, 1), ("y", 4, 7, 1), ("z", 8, 7, 1),
-            ("intensity", 12, 2, 1), ("confidence", 13, 4, 1),
-            ("offset_time", 15, 7, 1),
-        ),
-        "height": 1,
-        "is_bigendian": False,
-        "point_step": 19,
-    },
-    "SLAM_WORLD": {
+    "LIDAR_WORLD": {
         "fields": (
             ("x", 0, 7, 1), ("y", 4, 7, 1), ("z", 8, 7, 1),
             ("rgb", 12, 7, 1),
@@ -136,7 +124,7 @@ class StreamingBagIndex:
         root = Path(rosbag_dir).resolve()
         metadata = root / "metadata.yaml"
         if not metadata.is_file():
-            raise ValueError("Odin1 ROS bag folder must contain metadata.yaml")
+            raise ValueError("ROS bag folder must contain metadata.yaml")
         shards = _bag_shards(root, metadata)
         self.root = root
         self.input_files = {"metadata.yaml": metadata}
@@ -150,19 +138,14 @@ class StreamingBagIndex:
         self._readers_by_thread: dict[int, _StreamingReadConnections] = {}
         self._topic_identities: dict[str, dict[str, object]] = {}
         self._source_topic = profile.source.topic
+        self._image_topic = profile.source.image_topic
+        self._odometry_topic = profile.source.odometry_topic
         self._source_frame_ids: set[str] = set()
         self._odom_frame_ids: set[str] = set()
         self._odom_child_frame_ids: set[str] = set()
         self._source_layouts: list[dict[str, object]] = []
-        self._pose_samples: list[PoseSample] | None = (
-            [] if profile.source.mode == "LIDAR_RAW" else None
-        )
-        self._pose_track: PoseTrack | None = None
         try:
             self._build(profile)
-            if self._pose_samples is not None:
-                self._pose_samples.sort(key=lambda sample: sample.timestamp_ns)
-                self._pose_track = PoseTrack(tuple(self._pose_samples))
         except BaseException:
             self._index_path.unlink(missing_ok=True)
             raise
@@ -189,14 +172,9 @@ class StreamingBagIndex:
             raise ValueError("Streaming bag source layout is unavailable")
         return self._source_layouts[0]
 
-    @property
-    def pose_track(self) -> PoseTrack:
-        if self._pose_track is None:
-            raise RuntimeError("Streaming pose track is only retained for RAW LiDAR normalization")
-        return self._pose_track
-
     def _build(self, profile: PreparationProfile) -> None:
-        required_topics = (IMAGE_TOPIC, ODOMETRY_TOPIC, profile.source.topic)
+        required_topics = (self._image_topic, self._odometry_topic, profile.source.topic)
+        expected_identities = _expected_topic_identities(profile)
         connection = sqlite3.connect(str(self._index_path))
         try:
             connection.executescript(
@@ -225,7 +203,7 @@ class StreamingBagIndex:
                         if topic not in topics:
                             continue
                         topic_id, message_type, serialization = topics[topic]
-                        expected_type, expected_serialization = EXPECTED_TOPIC_IDENTITIES[topic]
+                        expected_type, expected_serialization = expected_identities[topic]
                         if (message_type, serialization) != (expected_type, expected_serialization):
                             raise ValueError(f"Topic identity mismatch for {topic}: {(message_type, serialization)}")
                         observed = {"type": message_type, "serialization": serialization}
@@ -239,13 +217,8 @@ class StreamingBagIndex:
                         batch: list[tuple[object, ...]] = []
                         for row_id, data in rows:
                             payload = bytes(data)
-                            timestamp_ns = _header_timestamp(topic, payload)
-                            self._validate_payload(
-                                topic,
-                                payload,
-                                profile,
-                                timestamp_ns=timestamp_ns,
-                            )
+                            timestamp_ns = _header_timestamp(topic, payload, profile)
+                            self._validate_payload(topic, payload, profile)
                             batch.append((topic, timestamp_ns, file_index, int(row_id), topic_id, shard.name))
                             if len(batch) >= 512:
                                 connection.executemany(
@@ -288,8 +261,6 @@ class StreamingBagIndex:
         topic: str,
         payload: bytes,
         profile: PreparationProfile,
-        *,
-        timestamp_ns: int,
     ) -> None:
         if topic == profile.source.topic:
             message = parse_pointcloud2(payload)
@@ -297,15 +268,10 @@ class StreamingBagIndex:
             if layout != EXPECTED_POINT_LAYOUTS[profile.source.mode]:
                 raise ValueError(f"PointCloud2 field layout mismatch for {profile.source.mode}")
             self._source_frame_ids.add(str(message["frame_id"]))
-        elif topic == ODOMETRY_TOPIC:
+        elif topic == self._odometry_topic:
             message = parse_odometry(payload)
             self._odom_frame_ids.add(str(message["frame_id"]))
             self._odom_child_frame_ids.add(str(message["child_frame_id"]))
-            if self._pose_samples is not None:
-                self._pose_samples.append(PoseSample(
-                    timestamp_ns,
-                    pose_to_matrix(message["position"], message["orientation_xyzw"]),
-                ))
 
     def _readers(self) -> _StreamingReadConnections:
         thread_id = get_ident()
@@ -353,7 +319,7 @@ class StreamingBagIndex:
         return self._readers().index_queries.execute(sql, params).fetchone()
 
     def image_count(self) -> int:
-        row = self._query_one("SELECT COUNT(*) FROM events WHERE topic = ?", (IMAGE_TOPIC,))
+        row = self._query_one("SELECT COUNT(*) FROM events WHERE topic = ?", (self._image_topic,))
         return int(row[0]) if row else 0
 
     def iter_images(self, image_start: int, image_limit: int | None) -> Iterator[tuple[int, BagMessage]]:
@@ -362,7 +328,7 @@ class StreamingBagIndex:
             "SELECT topic, timestamp_ns, storage_file_index, storage_row_id, topic_id, shard_name "
             "FROM events WHERE topic = ? ORDER BY timestamp_ns, storage_file_index, storage_row_id"
         )
-        rows = self._readers().image_iteration.execute(sql, (IMAGE_TOPIC,))
+        rows = self._readers().image_iteration.execute(sql, (self._image_topic,))
         for image_index, row in enumerate(rows):
             if image_index < image_start:
                 continue
@@ -401,13 +367,13 @@ class StreamingBagIndex:
             "SELECT topic, timestamp_ns, storage_file_index, storage_row_id, topic_id, shard_name "
             "FROM events WHERE topic = ? AND timestamp_ns <= ? "
             "ORDER BY timestamp_ns DESC, storage_file_index, storage_row_id LIMIT 1",
-            (ODOMETRY_TOPIC, int(timestamp_ns)),
+            (self._odometry_topic, int(timestamp_ns)),
         )
         right = self._query_one(
             "SELECT topic, timestamp_ns, storage_file_index, storage_row_id, topic_id, shard_name "
             "FROM events WHERE topic = ? AND timestamp_ns >= ? "
             "ORDER BY timestamp_ns, storage_file_index, storage_row_id LIMIT 1",
-            (ODOMETRY_TOPIC, int(timestamp_ns)),
+            (self._odometry_topic, int(timestamp_ns)),
         )
         return (self._row(left) if left is not None else None, self._row(right) if right is not None else None)
 
@@ -441,7 +407,7 @@ class IndexedPoseTrack:
     def coverage_ns(self) -> tuple[int, int]:
         row = self._index._query_one(
             "SELECT MIN(timestamp_ns), MAX(timestamp_ns) FROM events WHERE topic = ?",
-            (ODOMETRY_TOPIC,),
+            (self._index._odometry_topic,),
         )
         if row is None:
             raise ValueError("Odometry topic has no timestamp coverage")
@@ -502,7 +468,6 @@ class StreamingBagRuntime:
         sampler: dict[str, np.ndarray],
         intrinsics: CameraIntrinsics,
         lidar_from_camera: np.ndarray,
-        raw_normalizer: RawWorldNormalizer | None,
         producer_identity: dict[str, object],
     ) -> None:
         self.index = index
@@ -511,7 +476,6 @@ class StreamingBagRuntime:
         self.sampler = sampler
         self.intrinsics = intrinsics
         self.lidar_from_camera = lidar_from_camera
-        self.raw_normalizer = raw_normalizer
         self.poses = IndexedPoseTrack(index)
         self.producer_identity = producer_identity
 
@@ -556,7 +520,6 @@ class PreparedBagRuntime:
     sampler: dict[str, np.ndarray]
     intrinsics: CameraIntrinsics
     lidar_from_camera: np.ndarray
-    raw_normalizer: RawWorldNormalizer | None
     producer_identity: dict[str, object]
 
     @property
@@ -565,11 +528,12 @@ class PreparedBagRuntime:
 
     @property
     def image_count(self) -> int:
-        return len(self.bag.messages[IMAGE_TOPIC])
+        return len(self.bag.messages[self.profile.source.image_topic])
 
     def iter_images(self, image_start: int, image_limit: int | None) -> Iterator[tuple[int, BagMessage]]:
         stop = None if image_limit is None else image_start + image_limit
-        for image_index, image_record in tuple(enumerate(self.bag.messages[IMAGE_TOPIC]))[image_start:stop]:
+        image_topic = self.profile.source.image_topic
+        for image_index, image_record in tuple(enumerate(self.bag.messages[image_topic]))[image_start:stop]:
             yield image_index, image_record
 
     def nearest_source(self, timestamp_ns: int, *, max_dt_ns: int) -> BagMessage | None:
@@ -585,37 +549,21 @@ def prepare_bag_runtime(
     preparation_profile: str,
     calibration_path: Path | None,
     non_formal: bool,
-    confirm_raw_offset_time_seconds_from_scan_start: bool,
-    confirm_base_from_lidar_identity: bool,
     require_clean_worktree: bool = False,
 ) -> PreparedBagRuntime:
     profile = profile_for_name(preparation_profile)
     bag_root = Path(rosbag_dir).resolve()
     calibration = Path(calibration_path).resolve() if calibration_path is not None else bag_root / "cam_in_ex.txt"
     if not calibration.is_file():
-        raise ValueError(f"Missing Odin1 camera/LiDAR calibration: {calibration}")
-    if profile.source.mode == "LIDAR_RAW" and not non_formal:
-        if not confirm_raw_offset_time_seconds_from_scan_start:
-            raise ValueError("Formal raw production requires confirmed offset_time seconds from scan-start semantics")
-        if not confirm_base_from_lidar_identity:
-            raise ValueError("Formal raw production requires confirmed T_base_from_lidar=identity")
+        raise ValueError(f"Missing camera/LiDAR calibration: {calibration}")
 
     bag = read_bag_inputs(bag_root, profile)
     source_messages = bag.messages[profile.source.topic]
     source_layout = _source_layout(source_messages, profile)
     if set(source_layout["frame_ids"]) != {profile.source.frame_id}:
         raise ValueError(f"Profile source frame mismatch: {source_layout['frame_ids']}")
-    poses, odometry_frames = _pose_track(bag.messages[ODOMETRY_TOPIC])
+    poses, odometry_frames = _pose_track(bag.messages[profile.source.odometry_topic], profile)
     camera_calibration, sampler, intrinsics = _camera_setup(calibration, profile)
-    raw_normalizer = None
-    if profile.source.mode == "LIDAR_RAW":
-        raw_normalizer = RawWorldNormalizer(
-            poses,
-            np.eye(4),
-            offset_time_scale_ns=1_000_000_000.0,
-            max_pose_distance_ns=int(round(profile.odometry_max_dt_ms * 1_000_000)),
-            offset_time_range=profile.timing.point_offset_range_s,
-        )
 
     identity = _code_identity()
     identity["input_contract"] = {
@@ -630,10 +578,6 @@ def prepare_bag_runtime(
             "output_grid": list(profile.camera.output_grid),
         },
     }
-    identity["raw_semantics_confirmation"] = {
-        "offset_time_seconds_from_scan_start": bool(confirm_raw_offset_time_seconds_from_scan_start),
-        "T_base_from_lidar_identity": bool(confirm_base_from_lidar_identity),
-    }
     if require_clean_worktree and identity["dirty"]:
         raise ValueError("Clean worktree required")
     return PreparedBagRuntime(
@@ -645,7 +589,6 @@ def prepare_bag_runtime(
         sampler=sampler,
         intrinsics=intrinsics,
         lidar_from_camera=np.linalg.inv(camera_calibration.t_camera_from_lidar),
-        raw_normalizer=raw_normalizer,
         producer_identity=identity,
     )
 
@@ -656,39 +599,23 @@ def prepare_streaming_bag_runtime(
     preparation_profile: str,
     calibration_path: Path | None,
     non_formal: bool,
-    confirm_raw_offset_time_seconds_from_scan_start: bool,
-    confirm_base_from_lidar_identity: bool,
     require_clean_worktree: bool = False,
 ) -> StreamingBagRuntime:
     profile = profile_for_name(preparation_profile)
     bag_root = Path(rosbag_dir).resolve()
     calibration = Path(calibration_path).resolve() if calibration_path is not None else bag_root / "cam_in_ex.txt"
     if not calibration.is_file():
-        raise ValueError(f"Missing Odin1 camera/LiDAR calibration: {calibration}")
-    if profile.source.mode == "LIDAR_RAW" and not non_formal:
-        if not confirm_raw_offset_time_seconds_from_scan_start:
-            raise ValueError("Formal raw production requires confirmed offset_time seconds from scan-start semantics")
-        if not confirm_base_from_lidar_identity:
-            raise ValueError("Formal raw production requires confirmed T_base_from_lidar=identity")
+        raise ValueError(f"Missing camera/LiDAR calibration: {calibration}")
     index = StreamingBagIndex(bag_root, profile)
     try:
         if index.source_frame_ids != {profile.source.frame_id}:
             raise ValueError(f"Profile source frame mismatch: {sorted(index.source_frame_ids)}")
-        if index.odom_frame_ids != {"odom"} or index.odom_child_frame_ids != {"odin1_base_link"}:
+        if index.odom_frame_ids != {"odom"} or index.odom_child_frame_ids != {profile.source.base_frame_id}:
             raise ValueError(
                 "Odometry frame contract mismatch: "
                 f"frame_id={sorted(index.odom_frame_ids)}, child_frame_id={sorted(index.odom_child_frame_ids)}"
             )
         camera_calibration, sampler, intrinsics = _camera_setup(calibration, profile)
-        raw_normalizer = None
-        if profile.source.mode == "LIDAR_RAW":
-            raw_normalizer = RawWorldNormalizer(
-                index.pose_track,
-                np.eye(4),
-                offset_time_scale_ns=1_000_000_000.0,
-                max_pose_distance_ns=int(round(profile.odometry_max_dt_ms * 1_000_000)),
-                offset_time_range=profile.timing.point_offset_range_s,
-            )
         identity = _code_identity()
         identity["input_contract"] = {
             "topics": index.topic_identities,
@@ -705,10 +632,6 @@ def prepare_streaming_bag_runtime(
                 "output_grid": list(profile.camera.output_grid),
             },
         }
-        identity["raw_semantics_confirmation"] = {
-            "offset_time_seconds_from_scan_start": bool(confirm_raw_offset_time_seconds_from_scan_start),
-            "T_base_from_lidar_identity": bool(confirm_base_from_lidar_identity),
-        }
         if require_clean_worktree and identity["dirty"]:
             raise ValueError("Clean worktree required")
         return StreamingBagRuntime(
@@ -718,7 +641,6 @@ def prepare_streaming_bag_runtime(
             sampler=sampler,
             intrinsics=intrinsics,
             lidar_from_camera=np.linalg.inv(camera_calibration.t_camera_from_lidar),
-            raw_normalizer=raw_normalizer,
             producer_identity=identity,
         )
     except BaseException:
@@ -726,10 +648,10 @@ def prepare_streaming_bag_runtime(
         raise
 
 
-def _header_timestamp(topic: str, data: bytes) -> int:
-    if topic == IMAGE_TOPIC:
+def _header_timestamp(topic: str, data: bytes, profile: PreparationProfile) -> int:
+    if topic == profile.source.image_topic:
         message = parse_compressed_image(data)
-    elif topic == ODOMETRY_TOPIC:
+    elif topic == profile.source.odometry_topic:
         message = parse_odometry(data)
     else:
         message = parse_pointcloud2(data)
@@ -740,9 +662,10 @@ def read_bag_inputs(rosbag_dir: Path, profile: PreparationProfile) -> BagInputs:
     root = Path(rosbag_dir).resolve()
     metadata = root / "metadata.yaml"
     if not metadata.is_file():
-        raise ValueError("Odin1 ROS bag folder must contain metadata.yaml")
+        raise ValueError("ROS bag folder must contain metadata.yaml")
     shards = _bag_shards(root, metadata)
-    required_topics = (IMAGE_TOPIC, ODOMETRY_TOPIC, profile.source.topic)
+    required_topics = (profile.source.image_topic, profile.source.odometry_topic, profile.source.topic)
+    expected_identities = _expected_topic_identities(profile)
     collected: dict[str, list[BagMessage]] = {topic: [] for topic in required_topics}
     identities: dict[str, dict[str, object]] = {}
     for file_index, shard in enumerate(shards):
@@ -757,7 +680,7 @@ def read_bag_inputs(rosbag_dir: Path, profile: PreparationProfile) -> BagInputs:
                 if topic not in topics:
                     continue
                 topic_id, message_type, serialization = topics[topic]
-                expected_type, expected_serialization = EXPECTED_TOPIC_IDENTITIES[topic]
+                expected_type, expected_serialization = expected_identities[topic]
                 if (message_type, serialization) != (expected_type, expected_serialization):
                     raise ValueError(f"Topic identity mismatch for {topic}: {(message_type, serialization)}")
                 observed = {"type": message_type, "serialization": serialization}
@@ -771,7 +694,7 @@ def read_bag_inputs(rosbag_dir: Path, profile: PreparationProfile) -> BagInputs:
                 for row_id, _, data in rows:
                     payload = bytes(data)
                     collected[topic].append(BagMessage(
-                        _header_timestamp(topic, payload), file_index, int(row_id), payload,
+                        _header_timestamp(topic, payload, profile), file_index, int(row_id), payload,
                     ))
     for topic in required_topics:
         if not collected[topic]:
@@ -813,7 +736,9 @@ def nearest_message(
     return candidate if abs(candidate.header_timestamp_ns - int(timestamp_ns)) <= int(max_dt_ns) else None
 
 
-def _pose_track(messages: tuple[BagMessage, ...]) -> tuple[PoseTrack, dict[str, object]]:
+def _pose_track(
+    messages: tuple[BagMessage, ...], profile: PreparationProfile,
+) -> tuple[PoseTrack, dict[str, object]]:
     samples: list[PoseSample] = []
     frame_ids: set[str] = set()
     child_frame_ids: set[str] = set()
@@ -825,7 +750,7 @@ def _pose_track(messages: tuple[BagMessage, ...]) -> tuple[PoseTrack, dict[str, 
             record.header_timestamp_ns,
             pose_to_matrix(message["position"], message["orientation_xyzw"]),
         ))
-    if frame_ids != {"odom"} or child_frame_ids != {"odin1_base_link"}:
+    if frame_ids != {"odom"} or child_frame_ids != {profile.source.base_frame_id}:
         raise ValueError(
             f"Odometry frame contract mismatch: frame_id={sorted(frame_ids)}, child_frame_id={sorted(child_frame_ids)}"
         )
@@ -835,12 +760,18 @@ def _pose_track(messages: tuple[BagMessage, ...]) -> tuple[PoseTrack, dict[str, 
     }
 
 
+_CAMERA_RECTIFICATION_BUILDERS = {
+    "FishPoly": build_fishpoly_rectification_maps,
+    "Pinhole": build_pinhole_rectification_maps,
+}
+
+
 def _camera_setup(calibration_path: Path, profile: PreparationProfile):
     calibration = parse_camera_lidar_calibration(calibration_path)
     if calibration.camera_params.get("cam_model") != profile.camera.source_model:
-        raise ValueError("Odin1 calibration must declare cam_model=FishPoly")
+        raise ValueError(f"Calibration must declare cam_model={profile.camera.source_model}")
     if calibration.matrix_name != "Tcl_0":
-        raise ValueError("Odin1 calibration must declare Tcl_0 as T_camera_from_lidar")
+        raise ValueError("Calibration must declare Tcl_0 as T_camera_from_lidar")
     t_camera_from_lidar = np.asarray(calibration.t_camera_from_lidar, dtype=np.float64)
     rotation = t_camera_from_lidar[:3, :3]
     if (
@@ -857,9 +788,12 @@ def _camera_setup(calibration_path: Path, profile: PreparationProfile):
         "K_like": calibration.k_like,
         "distortion": calibration.distortion,
     }
-    map_x, map_y, pinhole = build_fishpoly_rectification_maps(raw_camera)
+    builder = _CAMERA_RECTIFICATION_BUILDERS.get(profile.camera.source_model)
+    if builder is None:
+        raise ValueError(f"Unsupported camera source_model: {profile.camera.source_model}")
+    map_x, map_y, pinhole = builder(raw_camera)
     if (int(pinhole["height"]), int(pinhole["width"])) != profile.camera.output_grid:
-        raise ValueError("FishPoly rectification grid does not match preparation profile")
+        raise ValueError("Rectification grid does not match preparation profile")
     sampler = build_sampler(map_x, map_y, raw_camera["width"], raw_camera["height"])
     intrinsics = CameraIntrinsics(
         int(pinhole["width"]), int(pinhole["height"]),
@@ -953,9 +887,6 @@ def _build_slot(
     sampler: dict[str, np.ndarray],
     intrinsics: CameraIntrinsics,
     lidar_from_camera: np.ndarray,
-    raw_normalizer: RawWorldNormalizer | None,
-    raw_offset_time_confirmed: bool = False,
-    base_from_lidar_identity_confirmed: bool = False,
 ) -> FinalizedSensorFrame | RejectedSensorFrame:
     stem = f"{image_index:06d}"
     timestamp = image_record.header_timestamp_ns
@@ -974,52 +905,14 @@ def _build_slot(
     cloud_message = parse_pointcloud2(source_record.data)
     if cloud_message["frame_id"] != profile.source.frame_id:
         return RejectedSensorFrame(image_index, stem, timestamp, "source-frame-mismatch")
-    if profile.source.mode == "LIDAR_RAW":
-        payload = decode_raw_cloud(cloud_message)
-        if raw_normalizer is None or "offset_time" not in payload:
-            return RejectedSensorFrame(image_index, stem, timestamp, "raw-offset-time-unavailable")
-        try:
-            world_xyz = raw_normalizer.normalize(
-                payload["xyz"],
-                cloud_timestamp_ns=source_record.header_timestamp_ns,
-                offset_time=payload["offset_time"],
-            )
-        except ValueError:
-            return RejectedSensorFrame(image_index, stem, timestamp, "raw-point-time-bracket-invalid")
-        offsets = np.asarray(payload["offset_time"], dtype=np.float64)
-        point_timestamps = source_record.header_timestamp_ns + np.rint(
-            offsets * 1_000_000_000.0,
-        ).astype(np.int64)
-        point_pose_brackets = []
-        if point_timestamps.size:
-            for point_timestamp in (int(point_timestamps.min()), int(point_timestamps.max())):
-                point_pose_brackets.append(poses.bracket_receipt(
-                    point_timestamp,
-                    max_distance_ns=int(round(profile.odometry_max_dt_ms * 1_000_000)),
-                ))
-        normalization_receipt = {
-            "mode": "per-point-offset-time",
-            "offset_time_unit_assumption": "second",
-            "header_reference_assumption": "scan-start",
-            "offset_time_semantics_confirmed": bool(raw_offset_time_confirmed),
-            "offset_time_min": float(offsets.min()) if offsets.size else None,
-            "offset_time_max": float(offsets.max()) if offsets.size else None,
-            "point_timestamp_range_ns": [
-                int(point_timestamps.min()), int(point_timestamps.max()),
-            ] if point_timestamps.size else None,
-            "point_pose_boundary_brackets": point_pose_brackets,
-            "T_base_from_lidar": "identity",
-            "T_base_from_lidar_confirmed": bool(base_from_lidar_identity_confirmed),
-        }
-    else:
-        payload = decode_slam_cloud(cloud_message)
-        world_xyz = SlamWorldNormalizer().normalize(payload["xyz"], frame_id=str(cloud_message["frame_id"]))
-        normalization_receipt = {
-            "mode": "direct-world",
-            "frame_id": "odom",
-            "point_time_policy": "unavailable-in-topic",
-            "producer_processing": "opaque-recorded-output",
-        }
+    payload = decode_slam_cloud(cloud_message)
+    world_xyz = LidarWorldNormalizer().normalize(payload["xyz"], frame_id=str(cloud_message["frame_id"]))
+    normalization_receipt = {
+        "mode": "direct-world",
+        "frame_id": "odom",
+        "point_time_policy": "unavailable-in-topic",
+        "producer_processing": "opaque-recorded-output",
+    }
     normalization_receipt["image_pose_bracket"] = image_pose_bracket
     try:
         decoded = decode_compressed_image(image_record.data)["image"]
@@ -1075,9 +968,6 @@ def iter_projected_centers(
             sampler=runtime.sampler,
             intrinsics=runtime.intrinsics,
             lidar_from_camera=runtime.lidar_from_camera,
-            raw_normalizer=runtime.raw_normalizer,
-            raw_offset_time_confirmed=bool(local_receipt.get("raw_offset_time_confirmed", False)),
-            base_from_lidar_identity_confirmed=bool(local_receipt.get("base_from_lidar_identity_confirmed", False)),
         )
         key = "rejected_slots" if isinstance(slot, RejectedSensorFrame) else "finalized_slots"
         local_receipt[key] = int(local_receipt.get(key, 0)) + 1

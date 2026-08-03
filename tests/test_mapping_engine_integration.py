@@ -65,7 +65,7 @@ def _frame(index: int, translation_x: float) -> FrameInputs:
     source_types = np.full((height, width), 255, dtype=np.uint8)
     source_types[valid] = int(SourceType.LIDAR_CENTER)
     confidence = valid.astype(np.float32)
-    family = InputSourceFamily.LIDAR_RAW
+    family = InputSourceFamily.LIDAR_WORLD
     center = DepthEvidence(
         SourceType.LIDAR_CENTER,
         depth,

@@ -42,7 +42,7 @@ def _frame(candidate_depth_m: float) -> FrameInputs:
                 np.full((1, 1), candidate_depth_m, dtype=np.float32),
                 np.ones((1, 1), dtype=np.bool_),
                 np.ones((1, 1), dtype=np.float32),
-                InputSourceFamily.LIDAR_RAW,
+                InputSourceFamily.LIDAR_WORLD,
             ),
         )),
     )
@@ -116,14 +116,14 @@ def _multi_pixel_frame() -> FrameInputs:
                 np.full((_HEIGHT, _WIDTH), 5.0, dtype=np.float32),
                 left,
                 left.astype(np.float32),
-                InputSourceFamily.LIDAR_RAW,
+                InputSourceFamily.LIDAR_WORLD,
             ),
             DepthEvidence(
                 SourceType.SPNET_COMPLETED,
                 np.full((_HEIGHT, _WIDTH), 7.0, dtype=np.float32),
                 right,
                 right.astype(np.float32),
-                InputSourceFamily.LIDAR_RAW,
+                InputSourceFamily.LIDAR_WORLD,
             ),
         )),
     )
@@ -189,14 +189,14 @@ def test_arbitration_follows_declared_priority_not_iteration_order() -> None:
                 np.full((_HEIGHT, _WIDTH), 5.0, dtype=np.float32),
                 overlap,
                 overlap.astype(np.float32),
-                InputSourceFamily.LIDAR_RAW,
+                InputSourceFamily.LIDAR_WORLD,
             ),
             DepthEvidence(
                 SourceType.SPNET_COMPLETED,
                 np.full((_HEIGHT, _WIDTH), 5.0, dtype=np.float32),
                 overlap,
                 overlap.astype(np.float32),
-                InputSourceFamily.LIDAR_RAW,
+                InputSourceFamily.LIDAR_WORLD,
             ),
         )),
     )
@@ -295,7 +295,7 @@ def test_growth_keeps_canonical_roles_for_slam_input() -> None:
                 np.full((_HEIGHT, _WIDTH), 5.0, dtype=np.float32),
                 np.ones((_HEIGHT, _WIDTH), dtype=np.bool_),
                 np.ones((_HEIGHT, _WIDTH), dtype=np.float32),
-                InputSourceFamily.SLAM_WORLD,
+                InputSourceFamily.LIDAR_WORLD,
             ),
         )),
     )

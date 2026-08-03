@@ -34,47 +34,6 @@ def _slerp(q0: np.ndarray, q1: np.ndarray, alpha: float) -> np.ndarray:
     return (np.sin((1.0 - alpha) * angle) / scale) * left + (np.sin(alpha * angle) / scale) * right
 
 
-def _slerp_many(q0: np.ndarray, q1: np.ndarray, alpha: np.ndarray) -> np.ndarray:
-    """Vectorized counterpart to :func:`_slerp` for independent pose queries."""
-    left = q0 / np.linalg.norm(q0, axis=1, keepdims=True)
-    right = q1 / np.linalg.norm(q1, axis=1, keepdims=True)
-    dot = np.sum(left * right, axis=1)
-    negative = dot < 0.0
-    right[negative] *= -1.0
-    dot = np.clip(np.abs(dot), -1.0, 1.0)
-    close = dot > 0.9995
-    result = np.empty_like(left)
-    if close.any():
-        linear = left[close] + alpha[close, None] * (right[close] - left[close])
-        result[close] = linear / np.linalg.norm(linear, axis=1, keepdims=True)
-    if (~close).any():
-        angles = np.arccos(dot[~close])
-        scales = np.sin(angles)
-        interpolated = (
-            np.sin((1.0 - alpha[~close]) * angles)[:, None] / scales[:, None]
-        ) * left[~close] + (
-            np.sin(alpha[~close] * angles)[:, None] / scales[:, None]
-        ) * right[~close]
-        result[~close] = interpolated
-    return result
-
-
-def _quaternion_xyzw_to_matrices(quaternions: np.ndarray) -> np.ndarray:
-    normalized = quaternions / np.linalg.norm(quaternions, axis=1, keepdims=True)
-    x, y, z, w = normalized.T
-    matrices = np.empty((len(quaternions), 3, 3), dtype=np.float64)
-    matrices[:, 0, 0] = 1 - 2 * (y * y + z * z)
-    matrices[:, 0, 1] = 2 * (x * y - z * w)
-    matrices[:, 0, 2] = 2 * (x * z + y * w)
-    matrices[:, 1, 0] = 2 * (x * y + z * w)
-    matrices[:, 1, 1] = 1 - 2 * (x * x + z * z)
-    matrices[:, 1, 2] = 2 * (y * z - x * w)
-    matrices[:, 2, 0] = 2 * (x * z - y * w)
-    matrices[:, 2, 1] = 2 * (y * z + x * w)
-    matrices[:, 2, 2] = 1 - 2 * (x * x + y * y)
-    return matrices
-
-
 @dataclass(frozen=True)
 class PoseSample:
     timestamp_ns: int
@@ -97,9 +56,6 @@ class PoseTrack:
             raise ValueError("PoseTrack timestamps must be strictly increasing")
         self._samples = samples
         self._timestamps = timestamps
-        self._batch_translations: np.ndarray | None = None
-        self._batch_rotations: np.ndarray | None = None
-        self._batch_quaternions: np.ndarray | None = None
 
     @property
     def coverage_ns(self) -> tuple[int, int]:
@@ -140,83 +96,6 @@ class PoseTrack:
         matrix[:3, :3] = quaternion_xyzw_to_matrix(_slerp(q0, q1, alpha))
         return matrix
 
-    def interpolate_many(
-        self,
-        timestamps_ns: np.ndarray,
-        *,
-        max_distance_ns: int | None = None,
-    ) -> np.ndarray:
-        """Interpolate an ordered or unordered timestamp vector in one search pass."""
-        timestamps = np.asarray(timestamps_ns, dtype=np.int64)
-        if timestamps.ndim != 1:
-            raise ValueError("Pose interpolation timestamps must be a vector")
-        if not timestamps.size:
-            return np.empty((0, 4, 4), dtype=np.float64)
-        outside = (timestamps < self._timestamps[0]) | (timestamps > self._timestamps[-1])
-        if outside.any():
-            timestamp = int(timestamps[np.flatnonzero(outside)[0]])
-            raise ValueError(f"Timestamp {timestamp} is outside odometry coverage {self.coverage_ns}")
-        right = np.searchsorted(self._timestamps, timestamps, side="left")
-        exact = self._timestamps[right] == timestamps
-        left = np.where(exact, right, right - 1)
-        spans = self._timestamps[right] - self._timestamps[left]
-        alpha = np.zeros(len(timestamps), dtype=np.float64)
-        interpolated = ~exact
-        alpha[interpolated] = (
-            timestamps[interpolated] - self._timestamps[left[interpolated]]
-        ) / spans[interpolated]
-        if max_distance_ns is not None:
-            distances = np.minimum(
-                np.abs(timestamps - self._timestamps[left]),
-                np.abs(self._timestamps[right] - timestamps),
-            )
-            invalid = (distances > int(max_distance_ns)) | (
-                spans > 2 * int(max_distance_ns)
-            )
-            if invalid.any():
-                timestamp = int(timestamps[np.flatnonzero(invalid)[0]])
-                raise ValueError(
-                    f"Timestamp {timestamp} has no odometry bracket within {max_distance_ns} ns"
-                )
-        translations, rotations, quaternions = self._batch_fields()
-        matrices = np.broadcast_to(np.eye(4, dtype=np.float64), (len(timestamps), 4, 4)).copy()
-        matrices[:, :3, 3] = (
-            (1.0 - alpha)[:, None] * translations[left]
-            + alpha[:, None] * translations[right]
-        )
-        matrices[:, :3, :3] = rotations[left]
-        if interpolated.any():
-            matrices[interpolated, :3, :3] = _quaternion_xyzw_to_matrices(
-                _slerp_many(
-                    quaternions[left[interpolated]],
-                    quaternions[right[interpolated]],
-                    alpha[interpolated],
-                )
-            )
-        return matrices
-
-    def _batch_fields(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        if self._batch_translations is None:
-            self._batch_translations = np.asarray(
-                [sample.world_from_base[:3, 3] for sample in self._samples],
-                dtype=np.float64,
-            )
-            self._batch_rotations = np.asarray(
-                [sample.world_from_base[:3, :3] for sample in self._samples],
-                dtype=np.float64,
-            )
-            self._batch_quaternions = np.asarray(
-                [
-                    matrix_to_quaternion_xyzw(sample.world_from_base[:3, :3])
-                    for sample in self._samples
-                ],
-                dtype=np.float64,
-            )
-        assert self._batch_translations is not None
-        assert self._batch_rotations is not None
-        assert self._batch_quaternions is not None
-        return self._batch_translations, self._batch_rotations, self._batch_quaternions
-
     def bracket_receipt(self, timestamp_ns: int, *, max_distance_ns: int | None = None) -> dict[str, object]:
         left, right, alpha = self.bracket(timestamp_ns, max_distance_ns=max_distance_ns)
         return {
@@ -236,72 +115,10 @@ def _xyz(value: np.ndarray) -> np.ndarray:
     return points.astype(np.float64, copy=False)
 
 
-class RawWorldNormalizer:
-    def __init__(
-        self,
-        poses: PoseTrack,
-        base_from_lidar: np.ndarray,
-        *,
-        offset_time_scale_ns: float = 1_000_000_000.0,
-        max_pose_distance_ns: int | None = None,
-        offset_time_range: tuple[float, float] | None = None,
-    ) -> None:
-        if not np.isfinite(offset_time_scale_ns) or offset_time_scale_ns <= 0:
-            raise ValueError("offset_time_scale_ns must be finite and positive")
-        self._poses = poses
-        self._base_from_lidar = _rigid_matrix(base_from_lidar, "base_from_lidar")
-        self._offset_time_scale_ns = float(offset_time_scale_ns)
-        if max_pose_distance_ns is not None and max_pose_distance_ns < 0:
-            raise ValueError("max_pose_distance_ns must be non-negative")
-        self._max_pose_distance_ns = max_pose_distance_ns
-        if offset_time_range is not None:
-            minimum, maximum = (float(value) for value in offset_time_range)
-            if not np.isfinite([minimum, maximum]).all() or minimum > maximum:
-                raise ValueError("offset_time_range must be a finite increasing interval")
-            self._offset_time_range = (minimum, maximum)
-        else:
-            self._offset_time_range = None
-
-    def normalize(
-        self,
-        points_lidar: np.ndarray,
-        *,
-        cloud_timestamp_ns: int,
-        offset_time: np.ndarray,
-    ) -> np.ndarray:
-        points = _xyz(points_lidar)
-        offsets = np.asarray(offset_time, dtype=np.float64)
-        if offsets.shape != (len(points),) or not np.isfinite(offsets).all():
-            raise ValueError("Raw offset_time must be a finite vector matching the point cloud")
-        if self._offset_time_range is not None and offsets.size:
-            minimum, maximum = self._offset_time_range
-            if (offsets < minimum).any() or (offsets > maximum).any():
-                raise ValueError("Raw offset_time is outside the preparation profile range")
-        offset_ns = np.rint(offsets * self._offset_time_scale_ns).astype(np.int64)
-        point_timestamps = int(cloud_timestamp_ns) + offset_ns
-        lidar_homogeneous = np.concatenate([points, np.ones((len(points), 1), dtype=np.float64)], axis=1)
-        base_points = (self._base_from_lidar @ lidar_homogeneous.T).T
-        unique_timestamps, point_pose_indices = np.unique(
-            point_timestamps,
-            return_inverse=True,
-        )
-        world_from_base = self._poses.interpolate_many(
-            unique_timestamps,
-            max_distance_ns=self._max_pose_distance_ns,
-        )
-        world = np.einsum(
-            "nij,nj->ni",
-            world_from_base[point_pose_indices, :3, :],
-            base_points,
-            optimize=True,
-        )
-        return world.astype(np.float32)
-
-
-class SlamWorldNormalizer:
+class LidarWorldNormalizer:
     def normalize(self, points_world: np.ndarray, *, frame_id: str) -> np.ndarray:
         if frame_id != "odom":
-            raise ValueError(f"SLAM_WORLD requires frame_id=odom, got {frame_id!r}")
+            raise ValueError(f"LIDAR_WORLD requires frame_id=odom, got {frame_id!r}")
         return _xyz(points_world).astype(np.float32, copy=True)
 
 
@@ -334,11 +151,7 @@ class WorldCloudEvidence:
     normalization_receipt: Mapping[str, object]
 
     def __post_init__(self) -> None:
-        families = {
-            ("LIDAR_RAW", "LIDAR_FUSED5"),
-            ("LIDAR_SLAM_CENTER", "LIDAR_SLAM_FUSED5"),
-        }
-        if (self.center_source_type, self.fused_source_type) not in families:
+        if (self.center_source_type, self.fused_source_type) != ("LIDAR_WORLD_CENTER", "LIDAR_WORLD_FUSED5"):
             raise ValueError("World cloud source types do not form a supported source family")
         if not isinstance(self.cloud_id, str) or not self.cloud_id:
             raise ValueError("World cloud id must be non-empty")

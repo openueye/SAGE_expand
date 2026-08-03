@@ -5,6 +5,7 @@ import math
 from pathlib import Path
 from typing import Any
 
+from .prepared_scene_contract import PROFILE_CONTRACTS
 from .source_policy import (
     SOURCE_DESCRIPTORS,
     SOURCE_NAMES,
@@ -33,7 +34,7 @@ class SceneConfig:
     resize_width: int | None = None
     resize_height: int | None = None
     enabled_depth_sources: tuple[str, ...] = (
-        "LIDAR_SLAM_CENTER", "LIDAR_SLAM_FUSED5",
+        "LIDAR_WORLD_CENTER", "LIDAR_WORLD_FUSED5",
     )
     center_depth_dir: Path | None = None
     input_adapter: str = "prepared-scene"
@@ -44,20 +45,11 @@ class SceneConfig:
     preparation_profile: str | None = None
     source_mode: str | None = None
     fusion_policy: str | None = None
-    confirm_raw_offset_time_seconds_from_scan_start: bool = False
-    confirm_base_from_lidar_identity: bool = False
     require_clean_worktree: bool = False
 
     def __post_init__(self) -> None:
-        if (
-            type(self.confirm_raw_offset_time_seconds_from_scan_start) is not bool
-            or type(self.confirm_base_from_lidar_identity) is not bool
-            or type(self.require_clean_worktree) is not bool
-        ):
-            raise ValueError(
-                "RAW semantics confirmations and require_clean_worktree "
-                "must be JSON booleans"
-            )
+        if type(self.require_clean_worktree) is not bool:
+            raise ValueError("require_clean_worktree must be a JSON boolean")
         if self.input_adapter not in {"prepared-scene", "rosbag-fixed-lag-v1"}:
             raise ValueError("input_adapter must be prepared-scene or rosbag-fixed-lag-v1")
         if (self.resize_width is None) != (self.resize_height is None):
@@ -66,10 +58,9 @@ class SceneConfig:
             raise ValueError("Resize dimensions must be positive")
         sources = tuple(self.enabled_depth_sources)
         if sources not in {
-            ("LIDAR_RAW",), ("LIDAR_RAW", "LIDAR_FUSED5"),
-            ("LIDAR_SLAM_CENTER",), ("LIDAR_SLAM_CENTER", "LIDAR_SLAM_FUSED5"),
+            ("LIDAR_WORLD_CENTER",), ("LIDAR_WORLD_CENTER", "LIDAR_WORLD_FUSED5"),
         }:
-            raise ValueError("enabled_depth_sources must select exactly one raw or SLAM LiDAR source family")
+            raise ValueError("enabled_depth_sources must select the LiDAR world source family")
         object.__setattr__(self, "enabled_depth_sources", sources)
         if self.input_adapter == "prepared-scene":
             if self.scene_dir is None or self.prepared_scene_dir is None:
@@ -78,8 +69,6 @@ class SceneConfig:
                 raise ValueError("Prepared Scene adapter requires fused5 artifact roots")
             if self.center_depth_dir is None:
                 raise ValueError("Prepared Scene adapter requires center_depth_dir")
-            if sources[0].startswith("LIDAR_SLAM") and self.center_depth_dir is None:
-                raise ValueError("SLAM source profiles require source-neutral center_depth_dir")
         else:
             if self.rosbag_dir is None or self.calibration_path is None:
                 raise ValueError("Streaming adapter requires rosbag_dir and calibration")
@@ -92,23 +81,13 @@ class SceneConfig:
                 raise ValueError("stream_queue_size must be a positive integer")
             if not self.preparation_profile or not self.source_mode or not self.fusion_policy:
                 raise ValueError("Streaming adapter requires preparation_profile, source_mode and fusion_policy")
-            expected = {
-                "odin1-calibrated-native-v1": ("LIDAR_RAW", "raw-centered-5-v1"),
-                "odin1-slam-world-native-v1": ("SLAM_WORLD", "slam-world-centered-5-v1"),
-            }.get(self.preparation_profile)
-            if expected is None or (self.source_mode, self.fusion_policy) != expected:
-                raise ValueError("Streaming source profile, source_mode and fusion_policy do not match")
-            expected_sources = {
-                "LIDAR_RAW": {"LIDAR_RAW", "LIDAR_FUSED5"},
-                "SLAM_WORLD": {"LIDAR_SLAM_CENTER", "LIDAR_SLAM_FUSED5"},
-            }[self.source_mode]
-            if not set(sources).issubset(expected_sources):
-                raise ValueError("Streaming enabled_depth_sources do not match source_mode")
-            if self.source_mode == "LIDAR_RAW" and (
-                not self.confirm_raw_offset_time_seconds_from_scan_start
-                or not self.confirm_base_from_lidar_identity
+            contract = PROFILE_CONTRACTS.get(self.preparation_profile)
+            if contract is None or (self.source_mode, self.fusion_policy) != (
+                contract["source"]["mode"], contract["depth"]["fusion_policy"],
             ):
-                raise ValueError("Formal RAW streaming requires both raw semantics confirmations")
+                raise ValueError("Streaming source profile, source_mode and fusion_policy do not match")
+            if not set(sources).issubset({"LIDAR_WORLD_CENTER", "LIDAR_WORLD_FUSED5"}):
+                raise ValueError("Streaming enabled_depth_sources do not match source_mode")
 
     @property
     def center_depth_path(self) -> Path:
@@ -475,8 +454,6 @@ class SageConfig:
             for name in (
                 "input_adapter", "rosbag_dir", "calibration_path", "write_through_dir",
                 "stream_queue_size", "preparation_profile", "source_mode", "fusion_policy",
-                "confirm_raw_offset_time_seconds_from_scan_start",
-                "confirm_base_from_lidar_identity",
             ):
                 scene.pop(name, None)
         else:

@@ -61,16 +61,16 @@ def _make_frame(secondary_depth_m: float, secondary_valid_count: int) -> FrameIn
         rgb=rgb,
         mapping=MappingObservation(
             mapping_depth, mapping_sources, mapping_confidence,
-            InputSourceFamily.SLAM_WORLD,
+            InputSourceFamily.LIDAR_WORLD,
         ),
         growth=GrowthInputs((
             DepthEvidence(
                 SourceType.LIDAR_CENTER, reference_depth, reference_valid,
-                reference_confidence, InputSourceFamily.SLAM_WORLD,
+                reference_confidence, InputSourceFamily.LIDAR_WORLD,
             ),
             DepthEvidence(
                 SourceType.SPNET_COMPLETED, secondary_depth, secondary_valid,
-                secondary_confidence, InputSourceFamily.SLAM_WORLD,
+                secondary_confidence, InputSourceFamily.LIDAR_WORLD,
             ),
         )),
     )

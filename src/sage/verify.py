@@ -77,14 +77,14 @@ def execution_preflight(config: object, *, device: str = "cuda") -> dict[str, ob
         pose=Pose(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0),
         rgb=np.zeros((height, width, 3), dtype=np.float32),
         mapping=MappingObservation(
-            depth, source_types, confidence, InputSourceFamily.SLAM_WORLD,
+            depth, source_types, confidence, InputSourceFamily.LIDAR_WORLD,
         ),
         growth=GrowthInputs((DepthEvidence(
             SourceType.LIDAR_CENTER,
             depth,
             valid,
             confidence,
-            InputSourceFamily.SLAM_WORLD,
+            InputSourceFamily.LIDAR_WORLD,
         ),)),
     )
     target = torch.device(device)

@@ -207,6 +207,7 @@ def _run_structure_optimization(
         calibration=source.calibration,
         write_through=source.write_through,
         device=device,
+        preparation_profile=source.preparation_profile,
     )
     if status:
         raise RuntimeError(f"SAGE structure optimization failed: {status}")
@@ -272,6 +273,7 @@ def preflight_training(
         calibration=source.calibration,
         write_through=source.write_through,
         device=device,
+        preparation_profile=source.preparation_profile,
     )
 
 

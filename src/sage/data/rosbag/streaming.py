@@ -173,15 +173,13 @@ class OdinBagFixedLagResultStream:
         self,
         rosbag_dir,
         *,
-        preparation_profile: str = "odin1-slam-world-native-v1",
+        preparation_profile: str = "odin1-lidar-world-native-v1",
         calibration_path=None,
         queue_capacity: int = 1,
         non_formal: bool = False,
         image_start: int = 0,
         image_limit: int | None = None,
         emitted_limit: int | None = None,
-        confirm_raw_offset_time_seconds_from_scan_start: bool = False,
-        confirm_base_from_lidar_identity: bool = False,
         require_clean_worktree: bool = False,
         write_through_dir=None,
     ) -> None:
@@ -215,8 +213,6 @@ class OdinBagFixedLagResultStream:
             preparation_profile=preparation_profile,
             calibration_path=calibration_path,
             non_formal=bool(non_formal or image_start != 0 or image_limit is not None),
-            confirm_raw_offset_time_seconds_from_scan_start=confirm_raw_offset_time_seconds_from_scan_start,
-            confirm_base_from_lidar_identity=confirm_base_from_lidar_identity,
             require_clean_worktree=require_clean_worktree,
         )
         self._iter_projected_centers = iter_projected_centers
@@ -228,8 +224,6 @@ class OdinBagFixedLagResultStream:
             "edge_slots_not_emitted": 0,
             "source_mode": self._runtime.profile.source.mode,
             "fallback_used": False,
-            "raw_offset_time_confirmed": bool(confirm_raw_offset_time_seconds_from_scan_start),
-            "base_from_lidar_identity_confirmed": bool(confirm_base_from_lidar_identity),
         }
         self._rejected_centers = []
         self._frame_chain = bytes(32)

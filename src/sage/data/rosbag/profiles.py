@@ -22,6 +22,9 @@ class SourceContract:
     fused_source_type: str
     fallback_policy: str
     producer_processing: str
+    image_topic: str
+    odometry_topic: str
+    base_frame_id: str
 
 
 @dataclass(frozen=True)

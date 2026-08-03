@@ -11,25 +11,13 @@ _COMMON_DEPTH = {
     "conflict_threshold_m": 1.0, "min_depth_m": 0.1, "max_depth_m": 200.0,
 }
 PROFILE_CONTRACTS = {
-    "odin1-calibrated-native-v1": {
+    "odin1-lidar-world-native-v1": {
         "source": {
-            "mode": "LIDAR_RAW", "topic": "/odin1/cloud_raw", "frame_id": "odin1_base_link",
-            "center_source_type": "LIDAR_RAW", "fused_source_type": "LIDAR_FUSED5",
-            "fallback_policy": "none", "producer_processing": "consumer-per-point-deskew",
-        },
-        "camera": _COMMON_CAMERA,
-        "timing": {
-            "clock": "message_header_stamp", "pose_policy": "se3-interpolation-no-extrapolation-v1",
-            "point_time_policy": "header-plus-offset-time-seconds-v1",
-            "point_offset_range_s": [0.0, 0.1],
-        },
-        "depth": {**_COMMON_DEPTH, "fusion_policy": "raw-centered-5-v1"},
-    },
-    "odin1-slam-world-native-v1": {
-        "source": {
-            "mode": "SLAM_WORLD", "topic": "/odin1/cloud_slam", "frame_id": "odom",
-            "center_source_type": "LIDAR_SLAM_CENTER", "fused_source_type": "LIDAR_SLAM_FUSED5",
+            "mode": "LIDAR_WORLD", "topic": "/odin1/cloud_slam", "frame_id": "odom",
+            "center_source_type": "LIDAR_WORLD_CENTER", "fused_source_type": "LIDAR_WORLD_FUSED5",
             "fallback_policy": "none", "producer_processing": "opaque-recorded-output",
+            "image_topic": "/odin1/image/compressed", "odometry_topic": "/odin1/odometry",
+            "base_frame_id": "odin1_base_link",
         },
         "camera": _COMMON_CAMERA,
         "timing": {
@@ -37,7 +25,23 @@ PROFILE_CONTRACTS = {
             "point_time_policy": "unavailable-in-topic",
             "point_offset_range_s": None,
         },
-        "depth": {**_COMMON_DEPTH, "fusion_policy": "slam-world-centered-5-v1"},
+        "depth": {**_COMMON_DEPTH, "fusion_policy": "lidar-world-centered-5-v1"},
+    },
+    "r3live-lidar-world-v1": {
+        "source": {
+            "mode": "LIDAR_WORLD", "topic": "/r3live/cloud_slam", "frame_id": "odom",
+            "center_source_type": "LIDAR_WORLD_CENTER", "fused_source_type": "LIDAR_WORLD_FUSED5",
+            "fallback_policy": "none", "producer_processing": "opaque-recorded-output",
+            "image_topic": "/r3live/image/compressed", "odometry_topic": "/r3live/odometry",
+            "base_frame_id": "r3live_lidar",
+        },
+        "camera": {"source_model": "Pinhole", "output_model": "PINHOLE", "output_grid": [1024, 1280]},
+        "timing": {
+            "clock": "message_header_stamp", "pose_policy": "se3-interpolation-no-extrapolation-v1",
+            "point_time_policy": "unavailable-in-topic",
+            "point_offset_range_s": None,
+        },
+        "depth": {**_COMMON_DEPTH, "fusion_policy": "lidar-world-centered-5-v1"},
     },
 }
 

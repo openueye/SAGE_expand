@@ -9,6 +9,7 @@ from typing import Any
 import yaml
 
 from .data.scene import PreparedScene
+from .foundation.prepared_scene_contract import PROFILE_CONTRACTS
 from .foundation.config import (
     ALPHA_NORMALIZED_DEPTH_POLICY,
     ALL_ACCEPTED_FRAME_POLICY,
@@ -99,6 +100,7 @@ class SageInput:
     root: Path
     calibration: Path | None = None
     write_through: Path | None = None
+    preparation_profile: str = "odin1-lidar-world-native-v1"
 
     def __post_init__(self) -> None:
         if self.kind not in {"rosbag", "prepared_scene"}:
@@ -107,6 +109,8 @@ class SageInput:
         if self.kind == "rosbag":
             if self.calibration is None:
                 raise ValueError("ROSBAG input requires camera/LiDAR calibration")
+            if self.preparation_profile not in PROFILE_CONTRACTS:
+                raise ValueError(f"Unsupported preparation_profile: {self.preparation_profile}")
             object.__setattr__(
                 self,
                 "calibration",
@@ -350,6 +354,7 @@ class SageMethodConfig:
                 stream_queue_size=self.input["stream_queue_size"],
                 require_clean_worktree=require_clean_worktree,
             )
+        contract = PROFILE_CONTRACTS[source.preparation_profile]["source"]
         return SceneConfig(
             scene_dir=None,
             prepared_scene_dir=None,
@@ -359,17 +364,17 @@ class SageMethodConfig:
             resize_width=self.input["resize_width"],
             resize_height=self.input["resize_height"],
             enabled_depth_sources=(
-                "LIDAR_SLAM_CENTER",
-                "LIDAR_SLAM_FUSED5",
+                contract["center_source_type"],
+                contract["fused_source_type"],
             ),
             input_adapter="rosbag-fixed-lag-v1",
             rosbag_dir=source.root,
             calibration_path=source.calibration,
             write_through_dir=source.write_through,
             stream_queue_size=self.input["stream_queue_size"],
-            preparation_profile="odin1-slam-world-native-v1",
-            source_mode="SLAM_WORLD",
-            fusion_policy="slam-world-centered-5-v1",
+            preparation_profile=source.preparation_profile,
+            source_mode=contract["mode"],
+            fusion_policy=PROFILE_CONTRACTS[source.preparation_profile]["depth"]["fusion_policy"],
             require_clean_worktree=require_clean_worktree,
         )
 

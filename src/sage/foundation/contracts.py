@@ -18,8 +18,7 @@ class SourceType(IntEnum):
 class InputSourceFamily(str, Enum):
     """Identity of the external input profile, not a Gaussian row role."""
 
-    LIDAR_RAW = "LIDAR_RAW"
-    SLAM_WORLD = "SLAM_WORLD"
+    LIDAR_WORLD = "LIDAR_WORLD"
 
 
 INVALID_SOURCE_TYPE = np.uint8(255)

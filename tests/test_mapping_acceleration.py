@@ -15,7 +15,7 @@ def _observation() -> MappingObservation:
             [255, int(SourceType.LIDAR_CENTER)],
         ], dtype=np.uint8),
         np.array([[1.0, 1.0], [0.0, 1.0]], dtype=np.float32),
-        InputSourceFamily.SLAM_WORLD,
+        InputSourceFamily.LIDAR_WORLD,
     )
 
 
@@ -69,7 +69,7 @@ def test_depth_alignment_uses_support_mass_and_detaches_alpha_support() -> None:
         np.ones((1, 2), dtype=np.float32),
         np.full((1, 2), int(SourceType.LIDAR_CENTER), dtype=np.uint8),
         np.ones((1, 2), dtype=np.float32),
-        InputSourceFamily.SLAM_WORLD,
+        InputSourceFamily.LIDAR_WORLD,
     )
     target_rgb = torch.zeros((1, 2, 3), dtype=torch.float32)
     rendered_depth = torch.tensor([[1.0, 0.4]], requires_grad=True)
@@ -108,7 +108,7 @@ def test_depth_coverage_hinge_penalizes_only_lidar_valid_low_support() -> None:
         np.asarray([[1.0, 0.0, 1.0]], dtype=np.float32),
         np.full((1, 3), int(SourceType.LIDAR_CENTER), dtype=np.uint8),
         np.ones((1, 3), dtype=np.float32),
-        InputSourceFamily.SLAM_WORLD,
+        InputSourceFamily.LIDAR_WORLD,
     )
     target_rgb = torch.zeros((1, 3, 3), dtype=torch.float32)
     rendered_depth = torch.ones((1, 3), requires_grad=True)

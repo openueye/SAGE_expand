@@ -103,6 +103,7 @@ def _resolved_config(
     data_root: Path | None,
     calibration: Path | None,
     write_through: Path | None,
+    preparation_profile: str = "odin1-lidar-world-native-v1",
 ) -> SageConfig:
     from ..method_config import SageInput, SageMethodConfig
 
@@ -114,6 +115,7 @@ def _resolved_config(
             root=data_root,
             calibration=calibration,
             write_through=write_through,
+            preparation_profile=preparation_profile,
         )
     elif input_format == "prepared-scene":
         source = SageInput(kind="prepared_scene", root=data_root)
@@ -223,6 +225,7 @@ def _verify(
     calibration: Path | None,
     write_through: Path | None,
     require_models: bool,
+    preparation_profile: str = "odin1-lidar-world-native-v1",
 ) -> int:
     from ..verify import execution_preflight, verify
 
@@ -233,6 +236,7 @@ def _verify(
         data_root=data_root,
         calibration=calibration,
         write_through=write_through,
+        preparation_profile=preparation_profile,
     )
     report = verify(
         require_models=require_models,
@@ -261,6 +265,7 @@ def run_formal_training(
     calibration: Path | None,
     write_through: Path | None,
     device: str,
+    preparation_profile: str = "odin1-lidar-world-native-v1",
 ) -> int:
     """Run structure mapping through the fresh-process evidence boundary."""
     config = _resolved_config(
@@ -270,6 +275,7 @@ def run_formal_training(
         data_root=data_root,
         calibration=calibration,
         write_through=write_through,
+        preparation_profile=preparation_profile,
     )
     receipt_path = _execution_receipt_path(config.output_dir)
     command = formal_train_command(
@@ -280,6 +286,7 @@ def run_formal_training(
         data_root=data_root,
         calibration=calibration,
         write_through=write_through,
+        preparation_profile=preparation_profile,
     )
     receipt = run_with_execution_receipt(
         command,
@@ -306,6 +313,7 @@ def run_training_preflight(
     calibration: Path | None,
     write_through: Path | None,
     device: str,
+    preparation_profile: str = "odin1-lidar-world-native-v1",
 ) -> int:
     """Validate the exact structure-training invocation without writing output."""
     config = _resolved_config(
@@ -315,6 +323,7 @@ def run_training_preflight(
         data_root=data_root,
         calibration=calibration,
         write_through=write_through,
+        preparation_profile=preparation_profile,
     )
     return _train_preflight(
         config,
@@ -324,6 +333,7 @@ def run_training_preflight(
         calibration=calibration,
         write_through=write_through,
         device=device,
+        preparation_profile=preparation_profile,
     )
 
 
@@ -336,6 +346,7 @@ def _train_preflight(
     calibration: Path | None,
     write_through: Path | None,
     device: str,
+    preparation_profile: str = "odin1-lidar-world-native-v1",
 ) -> int:
     from ..verify import execution_preflight, verify
 
@@ -361,6 +372,7 @@ def _train_preflight(
         data_root=data_root,
         calibration=calibration,
         write_through=write_through,
+        preparation_profile=preparation_profile,
     )
     print(json.dumps(report, indent=2, sort_keys=True, default=str))
     return 0
@@ -387,6 +399,11 @@ def _add_input_arguments(parser: argparse.ArgumentParser) -> None:
         "--write-through",
         type=Path,
         help="optional Prepared Scene output for odin-rosbag; omit for stream-only training",
+    )
+    parser.add_argument(
+        "--preparation-profile",
+        default="odin1-lidar-world-native-v1",
+        help="ROSBAG preparation_profile to use with --input-format odin-rosbag",
     )
 
 
@@ -427,6 +444,7 @@ def main(argv: list[str] | None = None) -> int:
             calibration=args.calibration,
             write_through=args.write_through,
             require_models=args.require_models,
+            preparation_profile=args.preparation_profile,
         )
     config = _resolved_config(
         args.config,
@@ -435,6 +453,7 @@ def main(argv: list[str] | None = None) -> int:
         data_root=args.data_root,
         calibration=args.calibration,
         write_through=args.write_through,
+        preparation_profile=args.preparation_profile,
     )
     if args.preflight:
         if args.execution_child:
@@ -447,6 +466,7 @@ def main(argv: list[str] | None = None) -> int:
             calibration=args.calibration,
             write_through=args.write_through,
             device=args.device,
+            preparation_profile=args.preparation_profile,
         )
     if args.execution_child:
         if os.environ.get(EXECUTION_CHILD_ENV) != "1":
@@ -461,6 +481,7 @@ def main(argv: list[str] | None = None) -> int:
         calibration=args.calibration,
         write_through=args.write_through,
         device=args.device,
+        preparation_profile=args.preparation_profile,
     )
 
 

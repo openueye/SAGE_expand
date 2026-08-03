@@ -42,7 +42,7 @@ def _frame() -> FrameInputs:
         center_depth,
         center_valid,
         center_valid.astype(np.float32),
-        InputSourceFamily.SLAM_WORLD,
+        InputSourceFamily.LIDAR_WORLD,
     )
     return FrameInputs(
         4,
@@ -59,7 +59,7 @@ def _frame() -> FrameInputs:
                 255,
             ).astype(np.uint8),
             center_valid.astype(np.float32),
-            InputSourceFamily.SLAM_WORLD,
+            InputSourceFamily.LIDAR_WORLD,
         ),
         GrowthInputs((center,)),
     )
@@ -145,7 +145,7 @@ class _FallbackProvider:
             depth,
             valid,
             np.full_like(depth, 0.4),
-            InputSourceFamily.SLAM_WORLD,
+            InputSourceFamily.LIDAR_WORLD,
         )
 
 
@@ -163,7 +163,7 @@ class _LegacyMappingProvider:
             depth,
             valid,
             np.full_like(depth, 0.4),
-            InputSourceFamily.SLAM_WORLD,
+            InputSourceFamily.LIDAR_WORLD,
         )
 
 

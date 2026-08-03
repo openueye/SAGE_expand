@@ -7,10 +7,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Tuple
 
+import cv2
 import numpy as np
 
 BASE_OFFSET = 4
-DISTORTION_KEYS = ("k2", "k3", "k4", "k5", "k6", "k7", "p1", "p2")
+DISTORTION_KEYS_BY_MODEL = {
+    "FishPoly": ("k2", "k3", "k4", "k5", "k6", "k7", "p1", "p2"),
+    "Pinhole": ("k1", "k2", "p1", "p2", "k3"),
+}
+K_LIKE_KEYS_BY_MODEL = {
+    "FishPoly": ("A11", "A12", "u0", "A22", "v0"),
+    "Pinhole": ("fx", "fy", "cx", "cy"),
+}
 POINTFIELD_DTYPE = {
     1: np.int8,
     2: np.uint8,
@@ -179,12 +187,22 @@ def parse_camera_lidar_calibration(path: Path) -> CameraCalibration:
     if len(matrix_values) != 16:
         raise ValueError(f"Expected one 4x4 calibration matrix in {path}, got {len(matrix_values)} values.")
     matrix = np.asarray(matrix_values, dtype=np.float64).reshape(4, 4)
-    k_like = [
-        [camera_params["A11"], camera_params["A12"], camera_params["u0"]],
-        [0.0, camera_params["A22"], camera_params["v0"]],
-        [0.0, 0.0, 1.0],
-    ]
-    distortion = {key: camera_params.get(key) for key in DISTORTION_KEYS}
+    cam_model = camera_params.get("cam_model")
+    if cam_model not in K_LIKE_KEYS_BY_MODEL:
+        raise ValueError(f"Unsupported cam_model in {path}: {cam_model!r}")
+    if cam_model == "FishPoly":
+        k_like = [
+            [camera_params["A11"], camera_params["A12"], camera_params["u0"]],
+            [0.0, camera_params["A22"], camera_params["v0"]],
+            [0.0, 0.0, 1.0],
+        ]
+    else:
+        k_like = [
+            [camera_params["fx"], 0.0, camera_params["cx"]],
+            [0.0, camera_params["fy"], camera_params["cy"]],
+            [0.0, 0.0, 1.0],
+        ]
+    distortion = {key: camera_params.get(key) for key in DISTORTION_KEYS_BY_MODEL[cam_model]}
     return CameraCalibration(
         path=str(path),
         matrix_name=str(matrix_name),
@@ -254,6 +272,27 @@ def build_fishpoly_rectification_maps(camera_data: Dict[str, Any]) -> Tuple[np.n
     map_x = a11 * xd + a12 * yd + u0
     map_y = a22 * yd + v0
     pinhole = {"width": output_width, "height": output_height, "fx": fx, "fy": fy, "cx": cx, "cy": cy}
+    return map_x.astype(np.float32), map_y.astype(np.float32), pinhole
+
+
+def build_pinhole_rectification_maps(camera_data: Dict[str, Any]) -> Tuple[np.ndarray, np.ndarray, Dict[str, float]]:
+    """Standard OpenCV pinhole + radial-tangential (plumb-bob) undistortion, output grid = source grid."""
+    k_mat = np.asarray(camera_data["K_like"], dtype=np.float64)
+    src_width = int(camera_data["width"])
+    src_height = int(camera_data["height"])
+    distortion = camera_data["distortion"]
+    dist_coeffs = np.asarray(
+        [distortion["k1"], distortion["k2"], distortion["p1"], distortion["p2"], distortion["k3"]],
+        dtype=np.float64,
+    )
+    map_x, map_y = cv2.initUndistortRectifyMap(
+        k_mat, dist_coeffs, None, k_mat, (src_width, src_height), cv2.CV_32FC1,
+    )
+    pinhole = {
+        "width": src_width, "height": src_height,
+        "fx": float(k_mat[0, 0]), "fy": float(k_mat[1, 1]),
+        "cx": float(k_mat[0, 2]), "cy": float(k_mat[1, 2]),
+    }
     return map_x.astype(np.float32), map_y.astype(np.float32), pinhole
 
 

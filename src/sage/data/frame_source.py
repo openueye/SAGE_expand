@@ -229,10 +229,6 @@ class OdinBagFixedLagFrameSource:
             queue_capacity=config.stream_queue_size,
             emitted_limit=frame_limit if frame_limit > 0 else None,
             non_formal=non_formal,
-            confirm_raw_offset_time_seconds_from_scan_start=(
-                config.confirm_raw_offset_time_seconds_from_scan_start
-            ),
-            confirm_base_from_lidar_identity=config.confirm_base_from_lidar_identity,
             require_clean_worktree=config.require_clean_worktree,
             write_through_dir=config.write_through_dir,
         )
@@ -270,15 +266,11 @@ class OdinBagFixedLagFrameSource:
         first_frame_recorded = False
         for result in self._stream.frames():
             source_mode = result.target.cloud.center_source_type
-            self._source_modes.add("SLAM_WORLD" if source_mode.startswith("LIDAR_SLAM") else "LIDAR_RAW")
-            if len(self._source_modes) > 1:
-                raise ValueError("FrameSource cannot mix raw and SLAM LiDAR source families")
+            if not source_mode.startswith("LIDAR_WORLD"):
+                raise ValueError("FrameSource center_source_type must be a LiDAR world family")
+            self._source_modes.add("LIDAR_WORLD")
             target = result.target
-            input_source_family = (
-                InputSourceFamily.SLAM_WORLD
-                if source_mode.startswith("LIDAR_SLAM")
-                else InputSourceFamily.LIDAR_RAW
-            )
+            input_source_family = InputSourceFamily.LIDAR_WORLD
             center_type = SourceType.LIDAR_CENTER
             fused_type = SourceType.LIDAR_FUSED
             center_depth = np.asarray(result.center_depth, dtype=np.float32)
