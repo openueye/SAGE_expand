@@ -11,19 +11,16 @@ from time import perf_counter
 import torch
 
 from ..artifacts import load_checkpoint
-from ..data.frame_source import frame_source_for_config
+from ..core_input import CoreObservationAssembler
 from ..engine.evaluation import EvaluationDepthPolicy, evaluate_frames
 from ..engine.metrics import ImageMetricEvaluator
 from ..engine.model import TrainableGaussians
 from ..engine.rendering import render
 from ..foundation.artifact_versions import APPEARANCE_REFINEMENT_CHECKPOINT_VERSION
 from ..foundation.code_identity import repository_code_identity
-from ..foundation.config import ALL_ACCEPTED_FRAME_LIMIT, SageConfig
+from ..foundation.config import SageConfig
 from ..foundation.hashing import sha256_file
-from ..foundation.identity_schema import (
-    normalize_dataset_identity,
-    validate_dataset_identity,
-)
+from ..foundation.identity_schema import validate_dataset_identity
 
 
 _EVALUATION_PROGRESS_EVERY = 50
@@ -75,8 +72,6 @@ def run_evaluation(
         prefix=f".{destination.name}.staging-",
         dir=destination.parent,
     ))
-    source = None
-    prepared = False
     started = perf_counter()
     try:
         model = TrainableGaussians.from_checkpoint(
@@ -92,15 +87,10 @@ def run_evaluation(
             hit_target_center=config.mapping.evaluation_hit_target_center,
             hit_target_fused5=config.mapping.evaluation_hit_target_fused5,
         )
-        source = frame_source_for_config(
-            config.scene,
-            frame_limit=ALL_ACCEPTED_FRAME_LIMIT,
-            non_formal=True,
-        )
-        dataset_identity = normalize_dataset_identity(
-            source.start_identity()
-        )
-        validate_dataset_identity(identity, dataset_identity)
+        resolved = config.input.create_adapter().preflight()
+        print("\n".join(resolved.summary_lines()), flush=True)
+        assembler = CoreObservationAssembler(resolved.contract.canonical.sources)
+        validate_dataset_identity(identity, resolved.identities)
         evaluation_started = perf_counter()
 
         def report_evaluation_progress(
@@ -118,7 +108,7 @@ def run_evaluation(
         with torch.no_grad():
             result = evaluate_frames(
                 model,
-                source.frames(),
+                assembler.frames(resolved.frames()),
                 renderer=render,
                 image_metrics=evaluator,
                 policy=policy,
@@ -130,9 +120,6 @@ def run_evaluation(
             f"elapsed {_format_duration(perf_counter() - evaluation_started)}",
             flush=True,
         )
-        receipt = source.prepare_close()
-        prepared = True
-        source.commit()
         model.to("cpu")
         report = {
             "producer_code": repository_code_identity(),
@@ -144,8 +131,11 @@ def run_evaluation(
                 "path": str(config.config_path),
                 "sha256": config_sha256,
             },
-            "completion_receipt": receipt,
-            "dataset_identity": dataset_identity,
+            "input": {
+                "adapter_type": resolved.contract.adapter_type,
+                "identities": resolved.identities.payload(),
+                "canonical": resolved.contract.canonical.payload(),
+            },
             "duration_seconds": perf_counter() - started,
             "result": result,
         }
@@ -158,8 +148,7 @@ def run_evaluation(
             "producer_code": report["producer_code"],
             "checkpoint": report["checkpoint"],
             "config": report["config"],
-            "completion_receipt": receipt,
-            "dataset_identity": dataset_identity,
+            "input": report["input"],
             "artifacts": {
                 "report": report_path.name,
                 "report_sha256": sha256_file(report_path),
@@ -170,12 +159,7 @@ def run_evaluation(
             encoding="utf-8",
         )
         staging.rename(destination)
-    except BaseException as exc:
-        if source is not None:
-            if prepared:
-                source.rollback_commit(exc)
-            else:
-                source.abort(exc)
+    except BaseException:
         shutil.rmtree(staging, ignore_errors=True)
         raise
     return destination

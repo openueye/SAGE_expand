@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 import json
 from pathlib import Path
 import shutil
 
 from .artifacts import load_checkpoint
-from .data.frame_source import frame_source_for_config
 from .evaluation.evaluation_run import run_evaluation
 from .execution import (
     EXECUTION_RECEIPT_SCHEMA_VERSION,
@@ -16,30 +14,20 @@ from .execution import (
     validate_execution_receipt,
 )
 from .foundation.artifact_versions import APPEARANCE_REFINEMENT_CHECKPOINT_VERSION
-from .foundation.config import ALL_ACCEPTED_FRAME_LIMIT, SageConfig
+from .foundation.config import SageConfig
 from .foundation.hashing import sha256_file
-from .foundation.identity_schema import (
-    normalize_dataset_identity,
-    validate_dataset_identity,
-)
+from .foundation.identity_schema import validate_dataset_identity
 from .mapping.mapping_worker import run_formal_training, run_training_preflight
-from .method_config import SageInput, SageMethodConfig
+from .method_config import SageMethodConfig
 from .refinement.refinement_run import (
     preflight_appearance_runtime,
     run_appearance_refinement,
 )
 
 
-def _current_dataset_identity(config: SageConfig) -> dict[str, object]:
-    source = frame_source_for_config(
-        config.scene,
-        frame_limit=ALL_ACCEPTED_FRAME_LIMIT,
-        non_formal=True,
-    )
-    try:
-        return normalize_dataset_identity(source.start_identity())
-    finally:
-        source.abort("dataset identity check complete")
+def _current_input_identity(config: SageConfig):
+    """Resolve the configured input once, to compare against a stored artifact."""
+    return config.input.create_adapter().preflight().identities
 
 
 def _remove_orphaned_staging(output: Path) -> None:
@@ -109,7 +97,7 @@ def _structure_output_is_resumable(
             return False
         validate_dataset_identity(
             manifest.get("identity_snapshot"),
-            _current_dataset_identity(config),
+            _current_input_identity(config),
         )
         validate_execution_receipt(
             output.with_name(f"{output.name}.execution.json"),
@@ -146,7 +134,7 @@ def _final_output_is_resumable(
             return False
         validate_dataset_identity(
             payload.get("identity_snapshot"),
-            _current_dataset_identity(config),
+            _current_input_identity(config),
         )
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         return (
@@ -171,7 +159,7 @@ def _evaluation_output_is_resumable(
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         report = json.loads(report_path.read_text(encoding="utf-8"))
-        current_identity = _current_dataset_identity(config)
+        current_identity = _current_input_identity(config)
         validate_dataset_identity(
             load_checkpoint(checkpoint).get("identity_snapshot"),
             current_identity,
@@ -194,7 +182,6 @@ def _evaluation_output_is_resumable(
 
 def _run_structure_optimization(
     method: SageMethodConfig,
-    source: SageInput,
     output: Path,
     *,
     device: str,
@@ -202,12 +189,7 @@ def _run_structure_optimization(
     status = run_formal_training(
         config_path=method.path,
         output=output,
-        input_format=source.internal_format,
-        data_root=source.root,
-        calibration=source.calibration,
-        write_through=source.write_through,
         device=device,
-        preparation_profile=source.preparation_profile,
     )
     if status:
         raise RuntimeError(f"SAGE structure optimization failed: {status}")
@@ -219,27 +201,18 @@ def _run_structure_optimization(
     return output.resolve()
 
 
-def _runtime_config(config: SageConfig) -> SageConfig:
-    """Disable mapping-only write-through for replayed downstream phases."""
-    return replace(
-        config,
-        scene=replace(config.scene, write_through_dir=None),
-    )
-
-
 def preflight_training(
     *,
     method: SageMethodConfig,
-    source: SageInput,
     output: Path,
     device: str,
 ) -> int:
     """Validate all runtime phases and the concrete input without training."""
     destination = Path(output).resolve()
     structure_output = destination / "structure"
-    config = method.resolve(source, structure_output)
+    config = method.resolve(structure_output)
     preflight_appearance_runtime(
-        _runtime_config(config),
+        config,
         method.refinement_config(),
         device=device,
     )
@@ -268,19 +241,13 @@ def preflight_training(
     return run_training_preflight(
         config_path=method.path,
         output=structure_output,
-        input_format=source.internal_format,
-        data_root=source.root,
-        calibration=source.calibration,
-        write_through=source.write_through,
         device=device,
-        preparation_profile=source.preparation_profile,
     )
 
 
 def run_training(
     *,
     method: SageMethodConfig,
-    source: SageInput,
     output: Path,
     device: str,
 ) -> Path:
@@ -289,8 +256,7 @@ def run_training(
     structure_output = destination / "structure"
     final_output = destination / "final"
     evaluation_output = destination / "evaluation"
-    config = method.resolve(source, structure_output)
-    runtime = _runtime_config(config)
+    config = method.resolve(structure_output)
     config_sha256 = sha256_file(method.path)
 
     if (destination / "run_manifest.json").exists():
@@ -325,7 +291,6 @@ def run_training(
         _remove_failed_structure_receipt(destination)
         _run_structure_optimization(
             method,
-            source,
             structure_output,
             device=device,
         )
@@ -338,7 +303,7 @@ def run_training(
     final_checkpoint = final_output / "appearance_checkpoint.pt"
     final_ready = _final_output_is_resumable(
         final_output,
-        config=runtime,
+        config=config,
         source_checkpoint=source_checkpoint,
     )
     if final_output.exists() and not final_ready:
@@ -346,7 +311,7 @@ def run_training(
     if not final_ready:
         print("SAGE stage 2/3: appearance refinement", flush=True)
         run_appearance_refinement(
-            runtime,
+            config,
             source_checkpoint,
             method.refinement_config(),
             final_output,
@@ -359,7 +324,7 @@ def run_training(
 
     evaluation_ready = _evaluation_output_is_resumable(
         evaluation_output,
-        config=runtime,
+        config=config,
         checkpoint=final_checkpoint,
     )
     if evaluation_output.exists() and not evaluation_ready:
@@ -369,7 +334,7 @@ def run_training(
     if not evaluation_ready:
         print("SAGE stage 3/3: final evaluation", flush=True)
         run_evaluation(
-            runtime,
+            config,
             final_checkpoint,
             evaluation_output,
             device=device,
@@ -383,10 +348,11 @@ def run_training(
             "path": str(method.path),
             "sha256": config_sha256,
         },
-        "input": {
-            "kind": source.kind,
-            "root": str(source.root),
-        },
+        # Recorded, not recomputed: the manifest must state what this run
+        # actually consumed, and re-resolving the input would decode it again.
+        "input": json.loads(
+            (structure_output / "run_manifest.json").read_text(encoding="utf-8")
+        )["input"],
         "artifacts": {
             "structure_checkpoint": str(
                 source_checkpoint.relative_to(destination)

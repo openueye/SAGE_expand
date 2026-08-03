@@ -9,7 +9,8 @@ from typing import Any, Callable, Iterable
 import torch
 
 from ..foundation.config import ALPHA_NORMALIZED_DEPTH_POLICY, RAW_ACCUMULATED_DEPTH_POLICY
-from ..foundation.contracts import FrameInputs, MappingObservation, SourceType
+from ..foundation.contracts import MappingObservation, SourceType
+from ..core_input import MappingFrame
 from .losses import alpha_normalized_depth
 from .rendering import RenderOutput
 
@@ -327,13 +328,13 @@ def _aggregate_geometry(frames: list[dict[str, Any]]) -> dict[str, Any]:
 
 def evaluate_frames(
     model: object,
-    frames: Iterable[FrameInputs],
+    frames: Iterable[MappingFrame],
     *,
-    renderer: Callable[[object, FrameInputs], RenderOutput],
+    renderer: Callable[[object, MappingFrame], RenderOutput],
     image_metrics: Callable[[torch.Tensor, torch.Tensor], object],
     policy: EvaluationDepthPolicy,
     map_every: int,
-    progress_callback: Callable[[int, FrameInputs], None] | None = None,
+    progress_callback: Callable[[int, MappingFrame], None] | None = None,
 ) -> dict[str, Any]:
     """Run the frozen image and geometry protocol over an ordered frame stream."""
     if type(map_every) is not int or map_every < 1:

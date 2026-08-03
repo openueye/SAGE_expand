@@ -8,6 +8,7 @@ call it instead of each re-deriving "center wins, fused fills holes".
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 
 import numpy as np
@@ -56,15 +57,41 @@ def camera_pose(frame: FrameInputs) -> Pose:
 
 def _confidence(observation: DepthObservation, source_type: SourceType) -> np.ndarray:
     if observation.confidence is not None:
-        return np.asarray(observation.confidence, dtype=np.float32)
+        return np.array(observation.confidence, dtype=np.float32)
     default = descriptor_for_type(source_type).default_confidence
     return np.where(observation.valid_mask, default, 0.0).astype(np.float32)
 
 
-@dataclass(frozen=True)
-class AssembledObservations:
+@dataclass(frozen=True, eq=False)
+class MappingFrame:
+    """A canonical frame materialized into what mapping actually optimizes.
+
+    Core never touches `FrameInputs` fields directly: it works with the
+    assembled mapping target, the per-source growth evidence and the camera
+    view, all derived here under one rule.
+    """
+
+    canonical: FrameInputs
     mapping: MappingObservation
     growth: GrowthInputs
+    intrinsics: CameraIntrinsics
+    pose: Pose
+    # Canonical arrays are read-only so adapters, writers and Core can share
+    # them; torch tensors must not alias a read-only buffer, so the image Core
+    # renders against is materialized once here instead of per access.
+    rgb: np.ndarray
+
+    @property
+    def index(self) -> int:
+        return self.canonical.frame_index
+
+    @property
+    def stem(self) -> str:
+        return self.canonical.stem
+
+    @property
+    def timestamp_ns(self) -> int:
+        return self.canonical.timestamp_ns
 
 
 class CoreObservationAssembler:
@@ -84,7 +111,11 @@ class CoreObservationAssembler:
     def enabled_sources(self) -> tuple[str, ...]:
         return self._enabled
 
-    def assemble(self, frame: FrameInputs) -> AssembledObservations:
+    def frames(self, frames: Iterable[FrameInputs]) -> Iterator[MappingFrame]:
+        for frame in frames:
+            yield self.assemble(frame)
+
+    def assemble(self, frame: FrameInputs) -> MappingFrame:
         height, width = frame.image_rgb.shape[:2]
         depth = np.zeros((height, width), dtype=np.float32)
         sources = np.full((height, width), INVALID_SOURCE_TYPE, dtype=np.uint8)
@@ -99,8 +130,8 @@ class CoreObservationAssembler:
             confidence = _confidence(observation, source_type)
             evidences.append(DepthEvidence(
                 source_type,
-                np.asarray(observation.depth_m, dtype=np.float32),
-                np.asarray(observation.valid_mask, dtype=bool),
+                np.array(observation.depth_m, dtype=np.float32),
+                np.array(observation.valid_mask, dtype=bool),
                 confidence,
             ))
             # Higher-priority sources come first and keep the pixel; the canonical
@@ -111,15 +142,19 @@ class CoreObservationAssembler:
             sources[take] = int(source_type)
             confidences[take] = confidence[take]
             claimed |= take
-        return AssembledObservations(
+        return MappingFrame(
+            canonical=frame,
             mapping=MappingObservation(depth, sources, confidences),
             growth=GrowthInputs(tuple(evidences)),
+            intrinsics=camera_intrinsics(frame),
+            pose=camera_pose(frame),
+            rgb=np.array(frame.image_rgb, dtype=np.float32),
         )
 
 
 __all__ = [
-    "AssembledObservations",
     "CoreObservationAssembler",
+    "MappingFrame",
     "camera_intrinsics",
     "camera_pose",
 ]

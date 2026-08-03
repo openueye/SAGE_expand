@@ -28,7 +28,8 @@ from ..foundation.config import (
     MappingLossConfig,
     PruningConfig,
 )
-from ..foundation.contracts import DepthEvidence, FrameInputs, SourceType
+from ..foundation.contracts import DepthEvidence, SourceType
+from ..core_input import MappingFrame
 from ..foundation.source_policy import SOURCE_DESCRIPTORS, descriptor_for_type, descriptors_for_types, opacity_keep_mask, source_counts
 
 
@@ -60,7 +61,7 @@ def expected_spnet_invocations(
 
 def mapping_spnet_evidence(
     provider: SPNetEvidenceProvider,
-    frame: FrameInputs,
+    frame: MappingFrame,
 ) -> tuple[DepthEvidence | None, DenseSPNetFrame | None]:
     """Use bundled dense evidence when supported, preserving legacy providers."""
     bundle_for = getattr(provider, "evidence_bundle_for", None)
@@ -195,13 +196,13 @@ class MappingEngine:
             growth, device=self.device, gaussian_initialization=gaussian_initialization
         )
 
-    def _render(self, model: TrainableGaussians, frame: FrameInputs) -> RenderOutput:
+    def _render(self, model: TrainableGaussians, frame: MappingFrame) -> RenderOutput:
         """Render once at the raw seam shared by growth, loss, and evaluation."""
         return self.renderer(model, frame)
 
     def _targets(
         self,
-        frame: FrameInputs,
+        frame: MappingFrame,
         cache: dict[int, _CachedFrameTargets],
     ) -> _CachedFrameTargets:
         """Return GPU-resident loss targets cached for the run's lifetime.
@@ -249,16 +250,13 @@ class MappingEngine:
             raise RuntimeError("Optimizer step state is inconsistent")
         return steps.pop()
 
-    def run(self, frames: Iterable[FrameInputs]) -> MappingRun:
+    def run(self, frames: Iterable[MappingFrame]) -> MappingRun:
         run_started = perf_counter()
         frame_iterator = iter(frames)
         try:
             first_frame = next(frame_iterator)
         except StopIteration as exc:
             raise ValueError("Mapping requires at least one frame") from exc
-        run_source_family = first_frame.mapping.source_family
-        if run_source_family is None:
-            raise ValueError("Mapping requires a declared LiDAR source family")
         model = TrainableGaussians.from_frame(
             first_frame,
             device=self.device,
@@ -270,7 +268,7 @@ class MappingEngine:
         optimizer_append_migrations = 0
         optimizer_prune_migrations = 0
         keyframes: list[int] = []
-        keyframe_by_index: dict[int, FrameInputs] = {}
+        keyframe_by_index: dict[int, MappingFrame] = {}
         target_cache: dict[int, _CachedFrameTargets] = {}
         commits: list[MappingCommit] = []
         actual_spnet_invocations = 0
@@ -280,8 +278,6 @@ class MappingEngine:
         processed_frames = 0
         commit_ordinal_by_frame_index: dict[int, int] = {}
         for frame in chain((first_frame,), frame_iterator):
-            if frame.mapping.source_family != run_source_family:
-                raise ValueError("Mapping run cannot switch raw/SLAM LiDAR source families")
             processed_frames += 1
             should_map = is_mapping_frame(frame.index, map_every=self.config.map_every)
             if should_map:

@@ -67,28 +67,9 @@ def publish_json_atomic(
             temporary.unlink(missing_ok=True)
 
 
-def formal_train_command(
-    *,
-    config_path: Path,
-    output_dir: Path,
-    device: str,
-    input_format: str = "prepared-scene",
-    data_root: Path | None = None,
-    calibration: Path | None = None,
-    write_through: Path | None = None,
-    preparation_profile: str = "odin1-lidar-world-native-v1",
-) -> list[str]:
-    if input_format not in {"prepared-scene", "odin-rosbag"}:
-        raise ValueError("input_format must be prepared-scene or odin-rosbag")
-    if input_format == "prepared-scene" and (
-        calibration is not None or write_through is not None
-    ):
-        raise ValueError("Prepared Scene commands cannot declare ROSBAG-only paths")
-    if input_format == "odin-rosbag" and (
-        data_root is None or calibration is None
-    ):
-        raise ValueError("Odin ROSBAG commands require data and calibration paths")
-    command = [
+def formal_train_command(*, config_path: Path, output_dir: Path, device: str) -> list[str]:
+    """The exact child invocation; the input comes from the config alone."""
+    return [
         sys.executable,
         "-m",
         "sage.mapping.mapping_worker",
@@ -100,17 +81,7 @@ def formal_train_command(
         "--device",
         str(device),
         "--execution-child",
-        "--input-format",
-        input_format,
     ]
-    if data_root is not None:
-        command.extend(["--data-root", str(Path(data_root).resolve())])
-    if calibration is not None:
-        command.extend(["--calibration", str(Path(calibration).resolve())])
-    if write_through is not None:
-        command.extend(["--write-through", str(Path(write_through).resolve())])
-    command.extend(["--preparation-profile", preparation_profile])
-    return command
 
 
 def _rss_bytes(value: int) -> int:

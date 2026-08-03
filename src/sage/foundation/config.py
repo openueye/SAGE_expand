@@ -3,9 +3,9 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field, replace
 import math
 from pathlib import Path
-from typing import Any
+from types import MappingProxyType
+from typing import Any, Mapping
 
-from .prepared_scene_contract import PROFILE_CONTRACTS
 from .source_policy import (
     SOURCE_DESCRIPTORS,
     SOURCE_NAMES,
@@ -26,74 +26,49 @@ ALL_ACCEPTED_FRAME_LIMIT = -1
 
 
 @dataclass(frozen=True)
-class SceneConfig:
-    scene_dir: Path | None
-    prepared_scene_dir: Path | None
-    fused5_depth_dir: Path | None
-    fused5_mask_dir: Path | None
-    resize_width: int | None = None
-    resize_height: int | None = None
-    enabled_depth_sources: tuple[str, ...] = (
-        "LIDAR_WORLD_CENTER", "LIDAR_WORLD_FUSED5",
-    )
-    center_depth_dir: Path | None = None
-    input_adapter: str = "prepared-scene"
-    rosbag_dir: Path | None = None
-    calibration_path: Path | None = None
-    write_through_dir: Path | None = None
-    stream_queue_size: int = 1
-    preparation_profile: str | None = None
-    source_mode: str | None = None
-    fusion_policy: str | None = None
+class InputConfig:
+    """The `input:` section, verbatim, plus where relative paths resolve from.
+
+    SAGE Core never reads this: it hands the payload to the adapter factory and
+    then works only with the resolved canonical frames.
+    """
+
+    payload: Mapping[str, Any]
+    base_dir: Path
     require_clean_worktree: bool = False
+    prefetch_depth: int = 4
 
     def __post_init__(self) -> None:
+        if not isinstance(self.payload, Mapping) or not isinstance(self.payload.get("type"), str):
+            raise ValueError("input must be an object declaring a type")
         if type(self.require_clean_worktree) is not bool:
             raise ValueError("require_clean_worktree must be a JSON boolean")
-        if self.input_adapter not in {"prepared-scene", "rosbag-fixed-lag-v1"}:
-            raise ValueError("input_adapter must be prepared-scene or rosbag-fixed-lag-v1")
-        if (self.resize_width is None) != (self.resize_height is None):
-            raise ValueError("resize_width and resize_height must be configured together")
-        if any(value is not None and value < 1 for value in (self.resize_width, self.resize_height)):
-            raise ValueError("Resize dimensions must be positive")
-        sources = tuple(self.enabled_depth_sources)
-        if sources not in {
-            ("LIDAR_WORLD_CENTER",), ("LIDAR_WORLD_CENTER", "LIDAR_WORLD_FUSED5"),
-        }:
-            raise ValueError("enabled_depth_sources must select the LiDAR world source family")
-        object.__setattr__(self, "enabled_depth_sources", sources)
-        if self.input_adapter == "prepared-scene":
-            if self.scene_dir is None or self.prepared_scene_dir is None:
-                raise ValueError("Prepared Scene adapter requires scene_dir and prepared_scene_dir")
-            if self.fused5_depth_dir is None or self.fused5_mask_dir is None:
-                raise ValueError("Prepared Scene adapter requires fused5 artifact roots")
-            if self.center_depth_dir is None:
-                raise ValueError("Prepared Scene adapter requires center_depth_dir")
-        else:
-            if self.rosbag_dir is None or self.calibration_path is None:
-                raise ValueError("Streaming adapter requires rosbag_dir and calibration")
-            if any(value is not None for value in (
-                self.scene_dir, self.prepared_scene_dir, self.center_depth_dir,
-                self.fused5_depth_dir, self.fused5_mask_dir,
-            )):
-                raise ValueError("Streaming adapter cannot declare Prepared Scene artifact roots")
-            if type(self.stream_queue_size) is not int or self.stream_queue_size < 1:
-                raise ValueError("stream_queue_size must be a positive integer")
-            if not self.preparation_profile or not self.source_mode or not self.fusion_policy:
-                raise ValueError("Streaming adapter requires preparation_profile, source_mode and fusion_policy")
-            contract = PROFILE_CONTRACTS.get(self.preparation_profile)
-            if contract is None or (self.source_mode, self.fusion_policy) != (
-                contract["source"]["mode"], contract["depth"]["fusion_policy"],
-            ):
-                raise ValueError("Streaming source profile, source_mode and fusion_policy do not match")
-            if not set(sources).issubset({"LIDAR_WORLD_CENTER", "LIDAR_WORLD_FUSED5"}):
-                raise ValueError("Streaming enabled_depth_sources do not match source_mode")
+        if type(self.prefetch_depth) is not int or self.prefetch_depth < 1:
+            raise ValueError("input prefetch_depth must be a positive integer")
+        object.__setattr__(self, "payload", MappingProxyType(dict(self.payload)))
+        object.__setattr__(self, "base_dir", Path(self.base_dir).resolve())
 
     @property
-    def center_depth_path(self) -> Path:
-        if self.center_depth_dir is None:
-            raise ValueError("Streaming scene has no materialized center depth root")
-        return self.center_depth_dir
+    def adapter_type(self) -> str:
+        return str(self.payload["type"])
+
+    def create_adapter(self):
+        from ..input.factory import create_input_adapter
+
+        return create_input_adapter(self.payload, base_dir=self.base_dir)
+
+    def manifest_payload(self) -> dict[str, Any]:
+        return {"base_dir": str(self.base_dir), **_jsonable(dict(self.payload))}
+
+
+def _jsonable(value: Any) -> Any:
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, Mapping):
+        return {key: _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(item) for item in value]
+    return value
 
 
 @dataclass(frozen=True)
@@ -401,7 +376,7 @@ class SageConfig:
     config_path: Path
     output_dir: Path
     seed: int
-    scene: SceneConfig
+    input: InputConfig
     growth_sources: GrowthSourcesConfig
     growth: GrowthConfig
     pruning: PruningConfig
@@ -442,23 +417,19 @@ class SageConfig:
                 return [convert(item) for item in value]
             return convert(asdict(value)) if hasattr(value, "__dataclass_fields__") else value
 
-        payload = {"schema_version": self.schema_version, "run": {"output_dir": self.output_dir, "seed": self.seed}, "runtime": {"model_root": self.model_root, "require_clean_worktree": self.scene.require_clean_worktree}, "scene": self.scene, "growth_sources": self.growth_sources, "growth": self.growth, "pruning": self.pruning, "mapping": self.mapping}
-        payload["gaussian_initialization"] = self.gaussian_initialization
-        payload["loss"] = self.loss
-        converted = convert(payload)
-        scene = converted["scene"]
-        scene.pop("require_clean_worktree", None)
-        if scene.get("center_depth_dir") is None:
-            scene.pop("center_depth_dir", None)
-        if self.scene.input_adapter == "prepared-scene":
-            for name in (
-                "input_adapter", "rosbag_dir", "calibration_path", "write_through_dir",
-                "stream_queue_size", "preparation_profile", "source_mode", "fusion_policy",
-            ):
-                scene.pop(name, None)
-        else:
-            scene["calibration"] = scene.pop("calibration_path")
-            for name in ("scene_dir", "prepared_scene_dir", "center_depth_dir", "fused5_depth_dir", "fused5_mask_dir"):
-                if scene.get(name) is None:
-                    scene.pop(name, None)
-        return converted
+        payload = {
+            "schema_version": self.schema_version,
+            "run": {"output_dir": self.output_dir, "seed": self.seed},
+            "runtime": {
+                "model_root": self.model_root,
+                "require_clean_worktree": self.input.require_clean_worktree,
+            },
+            "input": self.input.manifest_payload(),
+            "growth_sources": self.growth_sources,
+            "growth": self.growth,
+            "pruning": self.pruning,
+            "mapping": self.mapping,
+            "gaussian_initialization": self.gaussian_initialization,
+            "loss": self.loss,
+        }
+        return convert(payload)

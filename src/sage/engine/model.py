@@ -8,7 +8,8 @@ from ..foundation.artifact_versions import (
     CHECKPOINT_VERSION,
 )
 from ..foundation.config import GaussianInitializationConfig
-from ..foundation.contracts import FrameInputs, GaussianAppendBatch, SourceType
+from ..foundation.contracts import GaussianAppendBatch, SourceType
+from ..core_input import MappingFrame
 from .geometry import backproject_depth
 from ..foundation.source_policy import SOURCE_POLICY_VERSION
 
@@ -58,7 +59,7 @@ class TrainableGaussians(nn.Module):
     @classmethod
     def from_frame(
         cls,
-        frame: FrameInputs,
+        frame: MappingFrame,
         *,
         device: str | torch.device,
         gaussian_initialization: GaussianInitializationConfig,

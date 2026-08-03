@@ -1,6 +1,5 @@
 import numpy as np
 import torch
-from dataclasses import replace
 from types import SimpleNamespace
 
 from sage.engine.growth import GrowthBuilder
@@ -10,39 +9,26 @@ from sage.foundation.config import (
     GrowthConfig,
     ResidualThreshold,
 )
+from sage.core_input import MappingFrame
 from sage.foundation.contracts import (
-    CameraIntrinsics,
     DepthEvidence,
-    FrameInputs,
     GrowthInputs,
-    InputSourceFamily,
-    INVALID_SOURCE_TYPE,
-    MappingObservation,
-    Pose,
     SourceType,
 )
 
+from helpers import intrinsics_matrix, mapping_frame, pose_matrix
 
-def _frame(candidate_depth_m: float) -> FrameInputs:
-    return FrameInputs(
-        index=0,
-        stem="growth-depth-policy-test",
-        timestamp_ns=0,
-        intrinsics=CameraIntrinsics(1, 1, 1.0, 1.0, 0.0, 0.0),
-        pose=Pose(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0),
+
+def _frame(candidate_depth_m: float) -> MappingFrame:
+    return mapping_frame(
         rgb=np.zeros((1, 1, 3), dtype=np.float32),
-        mapping=MappingObservation(
-            np.zeros((1, 1), dtype=np.float32),
-            np.full((1, 1), INVALID_SOURCE_TYPE, dtype=np.uint8),
-            np.zeros((1, 1), dtype=np.float32),
-        ),
+        intrinsics=intrinsics_matrix(1.0, 1.0, 0.0, 0.0),
         growth=GrowthInputs((
             DepthEvidence(
                 SourceType.LIDAR_CENTER,
                 np.full((1, 1), candidate_depth_m, dtype=np.float32),
                 np.ones((1, 1), dtype=np.bool_),
                 np.ones((1, 1), dtype=np.float32),
-                InputSourceFamily.LIDAR_WORLD,
             ),
         )),
     )
@@ -93,37 +79,27 @@ _HEIGHT = 8
 _WIDTH = 8
 
 
-def _multi_pixel_frame() -> FrameInputs:
+def _multi_pixel_frame() -> MappingFrame:
     """两个源各占一半画面，互不重叠，避免 2D 仲裁干扰预算测试。"""
     left = np.zeros((_HEIGHT, _WIDTH), dtype=np.bool_)
     left[:, : _WIDTH // 2] = True
     right = ~left
-    return FrameInputs(
-        index=1,
-        stem="growth-budget-test",
-        timestamp_ns=0,
-        intrinsics=CameraIntrinsics(_WIDTH, _HEIGHT, 20.0, 20.0, _WIDTH / 2, _HEIGHT / 2),
-        pose=Pose(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0),
+    return mapping_frame(
+        frame_index=1,
         rgb=np.full((_HEIGHT, _WIDTH, 3), 0.5, dtype=np.float32),
-        mapping=MappingObservation(
-            np.zeros((_HEIGHT, _WIDTH), dtype=np.float32),
-            np.full((_HEIGHT, _WIDTH), INVALID_SOURCE_TYPE, dtype=np.uint8),
-            np.zeros((_HEIGHT, _WIDTH), dtype=np.float32),
-        ),
+        intrinsics=intrinsics_matrix(20.0, 20.0, _WIDTH / 2, _HEIGHT / 2),
         growth=GrowthInputs((
             DepthEvidence(
                 SourceType.LIDAR_CENTER,
                 np.full((_HEIGHT, _WIDTH), 5.0, dtype=np.float32),
                 left,
                 left.astype(np.float32),
-                InputSourceFamily.LIDAR_WORLD,
             ),
             DepthEvidence(
                 SourceType.SPNET_COMPLETED,
                 np.full((_HEIGHT, _WIDTH), 7.0, dtype=np.float32),
                 right,
                 right.astype(np.float32),
-                InputSourceFamily.LIDAR_WORLD,
             ),
         )),
     )
@@ -181,22 +157,22 @@ def test_growth_quota_does_not_starve_low_priority_source() -> None:
 def test_arbitration_follows_declared_priority_not_iteration_order() -> None:
     """2D 仲裁必须按 descriptor.priority 裁决，而不是按证据占位顺序。"""
     overlap = np.ones((_HEIGHT, _WIDTH), dtype=np.bool_)
-    frame = replace(
-        _multi_pixel_frame(),
+    frame = mapping_frame(
+        frame_index=1,
+        rgb=np.full((_HEIGHT, _WIDTH, 3), 0.5, dtype=np.float32),
+        intrinsics=intrinsics_matrix(20.0, 20.0, _WIDTH / 2, _HEIGHT / 2),
         growth=GrowthInputs((
             DepthEvidence(
                 SourceType.LIDAR_CENTER,
                 np.full((_HEIGHT, _WIDTH), 5.0, dtype=np.float32),
                 overlap,
                 overlap.astype(np.float32),
-                InputSourceFamily.LIDAR_WORLD,
             ),
             DepthEvidence(
                 SourceType.SPNET_COMPLETED,
                 np.full((_HEIGHT, _WIDTH), 5.0, dtype=np.float32),
                 overlap,
                 overlap.astype(np.float32),
-                InputSourceFamily.LIDAR_WORLD,
             ),
         )),
     )
@@ -264,8 +240,11 @@ def test_persistent_dedup_uses_distance_not_voxel_identity() -> None:
     assert near_boundary.batch.means3d.shape[0] == 1
 
     # The candidate is at (0, 0, 1); move it across the voxel boundary.
-    shifted_frame = replace(
-        frame, pose=Pose(0.049, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0),
+    shifted_frame = mapping_frame(
+        rgb=np.zeros((1, 1, 3), dtype=np.float32),
+        intrinsics=intrinsics_matrix(1.0, 1.0, 0.0, 0.0),
+        reference_from_camera=pose_matrix((0.049, 0.0, 0.0)),
+        growth=frame.growth,
     )
     near_boundary = builder.build(
         shifted_frame,
@@ -286,16 +265,17 @@ def test_persistent_dedup_uses_distance_not_voxel_identity() -> None:
     assert same_voxel_far.batch.means3d.shape[0] == 1
 
 
-def test_growth_keeps_canonical_roles_for_slam_input() -> None:
-    frame = replace(
-        _multi_pixel_frame(),
+def test_growth_keeps_canonical_roles_for_lidar_center_only_input() -> None:
+    frame = mapping_frame(
+        frame_index=1,
+        rgb=np.full((_HEIGHT, _WIDTH, 3), 0.5, dtype=np.float32),
+        intrinsics=intrinsics_matrix(20.0, 20.0, _WIDTH / 2, _HEIGHT / 2),
         growth=GrowthInputs((
             DepthEvidence(
                 SourceType.LIDAR_CENTER,
                 np.full((_HEIGHT, _WIDTH), 5.0, dtype=np.float32),
                 np.ones((_HEIGHT, _WIDTH), dtype=np.bool_),
                 np.ones((_HEIGHT, _WIDTH), dtype=np.float32),
-                InputSourceFamily.LIDAR_WORLD,
             ),
         )),
     )

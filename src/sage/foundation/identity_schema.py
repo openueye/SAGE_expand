@@ -161,29 +161,21 @@ def _valid_environment_locks(value: object) -> bool:
     )
 
 
-def validate_dataset_identity(
-    checkpoint_snapshot: object,
-    current_identity: object,
-) -> None:
-    if not isinstance(checkpoint_snapshot, dict) or not isinstance(current_identity, dict):
-        raise ValueError("Dataset identity must be represented by objects")
-    fields = {
-        "prepared_manifest_sha256": "prepared_manifest_sha256",
-        "transform_contract_sha256": "transform_contract_sha256",
-        "scene_content_sha256": "content_sha256",
-        "source_mode": "source_mode",
-        "source_policy_version": "source_policy_version",
-    }
-    mismatched = [
-        snapshot_name
-        for snapshot_name, current_name in fields.items()
-        if checkpoint_snapshot.get(snapshot_name) != current_identity.get(current_name)
-    ]
-    if mismatched:
-        raise ValueError(
-            "Evaluation dataset identity does not match the checkpoint: "
-            f"{', '.join(mismatched)}"
-        )
+def validate_dataset_identity(checkpoint_snapshot: object, current: object) -> None:
+    """Reject reuse of an artifact produced from a different canonical input.
+
+    `current` is the run's `InputIdentities`; only the canonical sequence and
+    contract matter, so a checkpoint stays usable across a ROSBAG and the
+    Prepared Scene exported from it.
+    """
+    from ..input.identity import InputIdentities, validate_core_identity_match
+
+    if not isinstance(current, InputIdentities):
+        raise ValueError("Current dataset identity must be an InputIdentities")
+    if not isinstance(checkpoint_snapshot, dict):
+        raise ValueError("Dataset identity snapshot must be an object")
+    recorded = checkpoint_snapshot.get("input", checkpoint_snapshot)
+    validate_core_identity_match(recorded, current)
 
 
 def _canonical_identity_sha256(value: object) -> str:
@@ -192,64 +184,9 @@ def _canonical_identity_sha256(value: object) -> str:
     ).hexdigest()
 
 
-def normalize_dataset_identity(frame_source_identity: object) -> dict[str, object]:
-    """Project either FrameSource identity onto the checkpoint comparison contract."""
-    if not isinstance(frame_source_identity, dict):
-        raise ValueError("Frame source identity must be represented by an object")
-    adapter = frame_source_identity.get("adapter")
-    if adapter == "prepared-scene":
-        return {
-            name: frame_source_identity.get(name)
-            for name in (
-                "prepared_manifest_sha256",
-                "transform_contract_sha256",
-                "content_sha256",
-                "source_mode",
-                "source_policy_version",
-            )
-        }
-    if adapter != "rosbag-fixed-lag-v1":
-        raise ValueError(f"Unsupported FrameSource identity adapter: {adapter}")
-    source = frame_source_identity.get("source")
-    input_hashes = frame_source_identity.get("input_files_sha256")
-    image_selection = frame_source_identity.get("image_selection")
-    if (
-        not isinstance(source, dict)
-        or not isinstance(input_hashes, dict)
-        or not isinstance(image_selection, dict)
-        or not isinstance(frame_source_identity.get("preparation_profile"), str)
-        or type(frame_source_identity.get("emitted_limit")) is not int
-    ):
-        raise ValueError("ROSBAG FrameSource identity lacks its dataset contract")
-    dataset_contract = {
-        name: frame_source_identity[name]
-        for name in (
-            "adapter",
-            "preparation_profile",
-            "source",
-            "source_policy_version",
-            "input_files_sha256",
-            "emitted_limit",
-            "image_selection",
-        )
-    }
-    return {
-        "prepared_manifest_sha256": _canonical_identity_sha256(dataset_contract),
-        "transform_contract_sha256": _canonical_identity_sha256(source),
-        "content_sha256": (
-            str(frame_source_identity["content_sha256"])
-            if frame_source_identity.get("content_sha256") is not None
-            else _canonical_identity_sha256(input_hashes)
-        ),
-        "source_mode": str(source["mode"]),
-        "source_policy_version": str(frame_source_identity["source_policy_version"]),
-    }
-
-
 __all__ = [
     "DependencyIdentity",
     "_valid_environment_locks",
     "_validate_spnet_adapter_payload",
-    "normalize_dataset_identity",
     "validate_dataset_identity",
 ]

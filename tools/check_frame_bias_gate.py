@@ -13,31 +13,23 @@ Covers the three cases the frame-level source bias gate must handle:
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
 import torch
 
+from sage.core_input import CoreObservationAssembler, MappingFrame
 from sage.foundation.config import GaussianInitializationConfig, GrowthConfig
-from sage.foundation.contracts import (
-    CameraIntrinsics,
-    DepthEvidence,
-    FrameInputs,
-    GrowthInputs,
-    InputSourceFamily,
-    MappingObservation,
-    Pose,
-    SourceType,
-)
+from sage.foundation.contracts import DepthEvidence, GrowthInputs, SourceType
 from sage.engine.growth import GrowthBuilder
 from sage.engine.rendering import RenderOutput
+from sage.input.frame import DepthObservation, FrameInputs, FrameMetadata
 
 HEIGHT = WIDTH = 8
 REFERENCE_DEPTH_M = 5.0
 
 
-def _make_frame(secondary_depth_m: float, secondary_valid_count: int) -> FrameInputs:
-    intrinsics = CameraIntrinsics(WIDTH, HEIGHT, 32.0, 32.0, WIDTH / 2, HEIGHT / 2)
-    pose = Pose(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0)
-
+def _make_frame(secondary_depth_m: float, secondary_valid_count: int) -> MappingFrame:
     reference_depth = np.full((HEIGHT, WIDTH), REFERENCE_DEPTH_M, dtype=np.float32)
     reference_valid = np.ones((HEIGHT, WIDTH), dtype=bool)
     reference_confidence = np.ones((HEIGHT, WIDTH), dtype=np.float32)
@@ -47,33 +39,32 @@ def _make_frame(secondary_depth_m: float, secondary_valid_count: int) -> FrameIn
     secondary_valid.flat[:secondary_valid_count] = True
     secondary_confidence = np.where(secondary_valid, 1.0, 0.0).astype(np.float32)
 
-    rgb = np.zeros((HEIGHT, WIDTH, 3), dtype=np.float32)
-    mapping_depth = np.zeros((HEIGHT, WIDTH), dtype=np.float32)
-    mapping_sources = np.full((HEIGHT, WIDTH), 255, dtype=np.uint8)
-    mapping_confidence = np.zeros((HEIGHT, WIDTH), dtype=np.float32)
-
-    return FrameInputs(
-        index=1,
-        stem="frame-bias-check",
+    canonical = FrameInputs(
+        frame_index=1,
         timestamp_ns=0,
-        intrinsics=intrinsics,
-        pose=pose,
-        rgb=rgb,
-        mapping=MappingObservation(
-            mapping_depth, mapping_sources, mapping_confidence,
-            InputSourceFamily.LIDAR_WORLD,
+        image_rgb=np.zeros((HEIGHT, WIDTH, 3), dtype=np.float32),
+        intrinsics=np.asarray(
+            [[32.0, 0.0, WIDTH / 2], [0.0, 32.0, HEIGHT / 2], [0.0, 0.0, 1.0]],
+            dtype=np.float64,
         ),
-        growth=GrowthInputs((
-            DepthEvidence(
-                SourceType.LIDAR_CENTER, reference_depth, reference_valid,
-                reference_confidence, InputSourceFamily.LIDAR_WORLD,
-            ),
-            DepthEvidence(
-                SourceType.SPNET_COMPLETED, secondary_depth, secondary_valid,
-                secondary_confidence, InputSourceFamily.LIDAR_WORLD,
-            ),
-        )),
+        reference_from_camera=np.eye(4, dtype=np.float64),
+        lidar_center=DepthObservation(reference_depth, reference_valid),
+        lidar_fused=None,
+        metadata=FrameMetadata({}, {}, {}),
     )
+    assembled = CoreObservationAssembler(("LIDAR_CENTER",)).assemble(canonical)
+    # SPNet evidence is produced inside mapping, so it is appended here rather
+    # than coming from the canonical frame.
+    return replace(assembled, growth=GrowthInputs((
+        DepthEvidence(
+            SourceType.LIDAR_CENTER, reference_depth, reference_valid,
+            reference_confidence,
+        ),
+        DepthEvidence(
+            SourceType.SPNET_COMPLETED, secondary_depth, secondary_valid,
+            secondary_confidence,
+        ),
+    )))
 
 
 def _make_rendered() -> RenderOutput:
@@ -85,7 +76,7 @@ def _make_rendered() -> RenderOutput:
     )
 
 
-def _spnet_reasons(builder: GrowthBuilder, frame: FrameInputs) -> dict[str, int]:
+def _spnet_reasons(builder: GrowthBuilder, frame: MappingFrame) -> dict[str, int]:
     result = builder.build(frame, _make_rendered())
     return result.stats.by_source["SPNET_COMPLETED"]["rejection_reasons"]
 

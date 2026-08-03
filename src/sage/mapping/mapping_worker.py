@@ -13,7 +13,7 @@ from time import perf_counter
 import numpy as np
 import torch
 
-from ..data.frame_source import frame_source_for_config
+from ..core_input import CoreObservationAssembler
 from ..data.providers.spnet import OnlineSPNetProvider, SPNetEvidenceProvider
 from ..engine.metrics import ImageMetricEvaluator
 from ..engine.model import TrainableGaussians
@@ -23,10 +23,8 @@ from ..execution import (
     formal_train_command,
     run_with_execution_receipt,
 )
-from ..foundation.config import (
-    ALL_ACCEPTED_FRAME_LIMIT,
-    SageConfig,
-)
+from ..foundation.config import SageConfig
+from ..input.prefetch import BoundedResultStream
 from ..foundation.hashing import sha256_file
 from ..foundation.identity_schema import DependencyIdentity
 from .mapper import MappingEngine
@@ -95,39 +93,11 @@ def _dependency_identity(
     )
 
 
-def _resolved_config(
-    config_path: Path,
-    *,
-    output: Path | None,
-    input_format: str,
-    data_root: Path | None,
-    calibration: Path | None,
-    write_through: Path | None,
-    preparation_profile: str = "odin1-lidar-world-native-v1",
-) -> SageConfig:
-    from ..method_config import SageInput, SageMethodConfig
+def _resolved_config(config_path: Path, *, output: Path | None) -> SageConfig:
+    from ..method_config import SageMethodConfig
 
-    if data_root is None:
-        raise ValueError("SAGE input root is required")
-    if input_format == "odin-rosbag":
-        source = SageInput(
-            kind="rosbag",
-            root=data_root,
-            calibration=calibration,
-            write_through=write_through,
-            preparation_profile=preparation_profile,
-        )
-    elif input_format == "prepared-scene":
-        source = SageInput(kind="prepared_scene", root=data_root)
-    else:
-        raise ValueError(
-            "SAGE input format must be odin-rosbag or prepared-scene"
-        )
     destination = Path(output).resolve() if output is not None else Path.cwd()
-    return SageMethodConfig.load(config_path).resolve(
-        source,
-        destination,
-    )
+    return SageMethodConfig.load(config_path).resolve(destination)
 
 
 def train(
@@ -143,13 +113,16 @@ def train(
     torch.manual_seed(config.seed)
     torch.cuda.manual_seed_all(config.seed)
     require_clean = (
-        config.scene.require_clean_worktree
+        config.input.require_clean_worktree
         if require_clean_code is None
         else require_clean_code
     )
     if type(require_clean) is not bool:
         raise ValueError("require_clean_code must be a boolean when provided")
 
+    resolved = config.input.create_adapter().preflight()
+    print("\n".join(resolved.summary_lines()), flush=True)
+    assembler = CoreObservationAssembler(resolved.contract.canonical.sources)
     renderer_identity = capture_renderer_identity()
     metric_evaluator = ImageMetricEvaluator(device, model_root=config.model_root)
     spnet_provider = _build_spnet_provider(config, device=device)
@@ -159,17 +132,25 @@ def train(
         spnet_provider,
         actual_spnet_invocations=0,
     )
-    source = frame_source_for_config(config.scene, frame_limit=ALL_ACCEPTED_FRAME_LIMIT)
     input_identity = RunInputIdentity.capture(
         config,
         dependencies=dependencies,
+        resolved=resolved,
         require_clean=require_clean,
-        frame_source=source,
     )
+    expected_frames = resolved.contract.canonical.frame_count
     mapping_started_at = perf_counter()
-    source.start_identity()
     torch.cuda.synchronize(device)
     torch.cuda.reset_peak_memory_stats(device)
+    # Frame assembly is CPU/IO work (PNG or CDR decode, projection, NumPy
+    # merge) that ran serially inside the optimization loop; one bounded
+    # producer keeps it off the critical path without unbounded buffering.
+    stream = BoundedResultStream(
+        lambda: assembler.frames(resolved.frames()),
+        identity={"adapter": resolved.contract.adapter_type},
+        queue_capacity=config.input.prefetch_depth,
+    )
+    runtime_metrics: dict[str, object] = {}
     try:
         result = MappingEngine(
             config.mapping, config.pruning, config.growth,
@@ -180,11 +161,12 @@ def train(
             seed=config.seed,
         ).run(
             _report_frames(
-                source.frames(),
-                expected_total=ALL_ACCEPTED_FRAME_LIMIT,
+                stream.frames(),
+                expected_total=expected_frames,
                 mapping_started_at=mapping_started_at,
             )
         )
+        stream.close()
         torch.cuda.synchronize(device)
         if result.spnet_actual_invocations != result.spnet_expected_invocations:
             raise RuntimeError("SPNet invocation count changed during SAGE training")
@@ -197,55 +179,41 @@ def train(
                 actual_spnet_invocations=result.spnet_actual_invocations,
             ),
         )
-        if hasattr(source, "set_runtime_metrics"):
-            source.set_runtime_metrics({"peak_cuda_memory_bytes": int(torch.cuda.max_memory_allocated(device))})
+        runtime_metrics["peak_cuda_memory_bytes"] = int(torch.cuda.max_memory_allocated(device))
         artifacts = write_run_artifacts(
-            config, result, input_identity=input_identity, completion_receipt=source.prepare_close(),
-            commit_source=source.commit, rollback_source=source.rollback_commit,
+            config,
+            result,
+            input_identity=input_identity,
+            resolved=resolved,
+            runtime_metrics=runtime_metrics,
         )
         return artifacts.run_dir
-    except BaseException as exc:
-        source.abort(exc)
+    except BaseException:
+        stream.abort("SAGE mapping failed")
         raise
 
 
-def _frame_source_identity(config: SageConfig) -> dict[str, object]:
-    source = frame_source_for_config(config.scene, frame_limit=ALL_ACCEPTED_FRAME_LIMIT)
-    try:
-        return source.start_identity()
-    finally:
-        source.abort("identity capture complete")
+def _input_identity_payload(config: SageConfig) -> dict[str, object]:
+    resolved = config.input.create_adapter().preflight()
+    return {
+        "contract": resolved.contract.payload(),
+        "preflight": resolved.report.payload(),
+        "identities": resolved.identities.payload(),
+    }
 
 
-def _verify(
-    config_path: Path,
-    *,
-    input_format: str,
-    data_root: Path | None,
-    calibration: Path | None,
-    write_through: Path | None,
-    require_models: bool,
-    preparation_profile: str = "odin1-lidar-world-native-v1",
-) -> int:
+def _verify(config_path: Path, *, require_models: bool) -> int:
     from ..verify import execution_preflight, verify
 
-    config = _resolved_config(
-        config_path,
-        output=None,
-        input_format=input_format,
-        data_root=data_root,
-        calibration=calibration,
-        write_through=write_through,
-        preparation_profile=preparation_profile,
-    )
+    config = _resolved_config(config_path, output=None)
     report = verify(
         require_models=require_models,
         model_root=config.model_root,
-        require_clean_worktree=config.scene.require_clean_worktree,
+        require_clean_worktree=config.input.require_clean_worktree,
     )
     report["config_sha256"] = sha256_file(config.config_path)
     report["config"] = config.manifest_dict()
-    report["dataset_identity"] = _frame_source_identity(config)
+    report["input"] = _input_identity_payload(config)
     if require_models:
         report["execution_preflight"] = execution_preflight(config)
     print(json.dumps(report, indent=2, sort_keys=True, default=str))
@@ -256,37 +224,12 @@ def _execution_receipt_path(output_dir: Path) -> Path:
     return output_dir.with_name(f"{output_dir.name}.execution.json")
 
 
-def run_formal_training(
-    *,
-    config_path: Path,
-    output: Path,
-    input_format: str,
-    data_root: Path | None,
-    calibration: Path | None,
-    write_through: Path | None,
-    device: str,
-    preparation_profile: str = "odin1-lidar-world-native-v1",
-) -> int:
+def run_formal_training(*, config_path: Path, output: Path, device: str) -> int:
     """Run structure mapping through the fresh-process evidence boundary."""
-    config = _resolved_config(
-        config_path,
-        output=output,
-        input_format=input_format,
-        data_root=data_root,
-        calibration=calibration,
-        write_through=write_through,
-        preparation_profile=preparation_profile,
-    )
+    config = _resolved_config(config_path, output=output)
     receipt_path = _execution_receipt_path(config.output_dir)
     command = formal_train_command(
-        config_path=config_path,
-        output_dir=config.output_dir,
-        device=device,
-        input_format=input_format,
-        data_root=data_root,
-        calibration=calibration,
-        write_through=write_through,
-        preparation_profile=preparation_profile,
+        config_path=config_path, output_dir=config.output_dir, device=device,
     )
     receipt = run_with_execution_receipt(
         command,
@@ -304,50 +247,9 @@ def run_formal_training(
     return int(receipt["exit_code"])
 
 
-def run_training_preflight(
-    *,
-    config_path: Path,
-    output: Path,
-    input_format: str,
-    data_root: Path | None,
-    calibration: Path | None,
-    write_through: Path | None,
-    device: str,
-    preparation_profile: str = "odin1-lidar-world-native-v1",
-) -> int:
+def run_training_preflight(*, config_path: Path, output: Path, device: str) -> int:
     """Validate the exact structure-training invocation without writing output."""
-    config = _resolved_config(
-        config_path,
-        output=output,
-        input_format=input_format,
-        data_root=data_root,
-        calibration=calibration,
-        write_through=write_through,
-        preparation_profile=preparation_profile,
-    )
-    return _train_preflight(
-        config,
-        config_path=config_path,
-        input_format=input_format,
-        data_root=data_root,
-        calibration=calibration,
-        write_through=write_through,
-        device=device,
-        preparation_profile=preparation_profile,
-    )
-
-
-def _train_preflight(
-    config: SageConfig,
-    *,
-    config_path: Path,
-    input_format: str,
-    data_root: Path | None,
-    calibration: Path | None,
-    write_through: Path | None,
-    device: str,
-    preparation_profile: str = "odin1-lidar-world-native-v1",
-) -> int:
+    config = _resolved_config(config_path, output=output)
     from ..verify import execution_preflight, verify
 
     if config.output_dir.exists():
@@ -358,53 +260,17 @@ def _train_preflight(
     report = verify(
         require_models=True,
         model_root=config.model_root,
-        require_clean_worktree=config.scene.require_clean_worktree,
+        require_clean_worktree=config.input.require_clean_worktree,
     )
     report["config_sha256"] = sha256_file(config.config_path)
     report["config"] = config.manifest_dict()
-    report["dataset_identity"] = _frame_source_identity(config)
+    report["input"] = _input_identity_payload(config)
     report["execution_preflight"] = execution_preflight(config, device=device)
     report["formal_train_command"] = formal_train_command(
-        config_path=config_path,
-        output_dir=config.output_dir,
-        device=device,
-        input_format=input_format,
-        data_root=data_root,
-        calibration=calibration,
-        write_through=write_through,
-        preparation_profile=preparation_profile,
+        config_path=config_path, output_dir=config.output_dir, device=device,
     )
     print(json.dumps(report, indent=2, sort_keys=True, default=str))
     return 0
-
-
-def _add_input_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
-        "--input-format",
-        choices=("prepared-scene", "odin-rosbag"),
-        default="prepared-scene",
-        help="select the explicit SAGE input adapter",
-    )
-    parser.add_argument(
-        "--data-root",
-        type=Path,
-        help="Prepared Scene root or finite Odin1 ROSBAG directory",
-    )
-    parser.add_argument(
-        "--calibration",
-        type=Path,
-        help="Odin1 cam_in_ex.txt; valid only with --input-format odin-rosbag",
-    )
-    parser.add_argument(
-        "--write-through",
-        type=Path,
-        help="optional Prepared Scene output for odin-rosbag; omit for stream-only training",
-    )
-    parser.add_argument(
-        "--preparation-profile",
-        default="odin1-lidar-world-native-v1",
-        help="ROSBAG preparation_profile to use with --input-format odin-rosbag",
-    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -415,15 +281,10 @@ def build_parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
     verify = commands.add_parser("verify", help="validate runtime, models, renderer, and configuration")
     verify.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
-    _add_input_arguments(verify)
     verify.add_argument("--require-models", action="store_true")
-    train_parser = commands.add_parser(
-        "train",
-        help="train the SAGE structure map from scratch",
-    )
+    train_parser = commands.add_parser("train", help="train the SAGE structure map from scratch")
     train_parser.add_argument("--config", required=True, type=Path)
     train_parser.add_argument("--output", required=True, type=Path)
-    _add_input_arguments(train_parser)
     train_parser.add_argument("--device", default="cuda")
     train_parser.add_argument(
         "--preflight",
@@ -437,51 +298,21 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "verify":
-        return _verify(
-            args.config,
-            input_format=args.input_format,
-            data_root=args.data_root,
-            calibration=args.calibration,
-            write_through=args.write_through,
-            require_models=args.require_models,
-            preparation_profile=args.preparation_profile,
-        )
-    config = _resolved_config(
-        args.config,
-        output=args.output,
-        input_format=args.input_format,
-        data_root=args.data_root,
-        calibration=args.calibration,
-        write_through=args.write_through,
-        preparation_profile=args.preparation_profile,
-    )
+        return _verify(args.config, require_models=args.require_models)
     if args.preflight:
         if args.execution_child:
             raise ValueError("training preflight cannot be an execution child")
         return run_training_preflight(
-            config_path=args.config,
-            output=args.output,
-            input_format=args.input_format,
-            data_root=args.data_root,
-            calibration=args.calibration,
-            write_through=args.write_through,
-            device=args.device,
-            preparation_profile=args.preparation_profile,
+            config_path=args.config, output=args.output, device=args.device,
         )
     if args.execution_child:
         if os.environ.get(EXECUTION_CHILD_ENV) != "1":
             raise ValueError("internal fresh-process boundary cannot be invoked directly")
+        config = _resolved_config(args.config, output=args.output)
         print(f"SAGE complete: {train(config, device=args.device)}", flush=True)
         return 0
     return run_formal_training(
-        config_path=args.config,
-        output=args.output,
-        input_format=args.input_format,
-        data_root=args.data_root,
-        calibration=args.calibration,
-        write_through=args.write_through,
-        device=args.device,
-        preparation_profile=args.preparation_profile,
+        config_path=args.config, output=args.output, device=args.device,
     )
 
 

@@ -20,7 +20,8 @@ from ...foundation.config import (
     NATIVE_FULL_FRAME_PAD_CROP_V1,
     SPNetOnlineConfig,
 )
-from ...foundation.contracts import DepthEvidence, FrameInputs, SourceType
+from ...foundation.contracts import DepthEvidence, SourceType
+from ...core_input import MappingFrame
 
 
 SPNET_SOURCE_IDENTITY_SCHEMA_VERSION = "sage-spnet-source-identity-v1"
@@ -346,14 +347,14 @@ class DenseSPNetProvider(Protocol):
     @property
     def identity(self) -> SPNetIdentity: ...
 
-    def dense_evidence_for(self, frame: FrameInputs) -> DepthEvidence: ...
+    def dense_evidence_for(self, frame: MappingFrame) -> DepthEvidence: ...
 
 
 class SPNetEvidenceProvider(Protocol):
     @property
     def identity(self) -> SPNetIdentity: ...
 
-    def evidence_for(self, frame: FrameInputs) -> DepthEvidence | None: ...
+    def evidence_for(self, frame: MappingFrame) -> DepthEvidence | None: ...
 
 
 class SPNetPredictor(Protocol):
@@ -570,7 +571,7 @@ class OnlineSPNetProvider:
         except Exception as exc:
             raise RuntimeError("SPNet online inference failed") from exc
 
-    def dense_evidence_for(self, frame: FrameInputs) -> DepthEvidence:
+    def dense_evidence_for(self, frame: MappingFrame) -> DepthEvidence:
         evidence = predict_spnet_dense_evidence(
             frame,
             self._predict,
@@ -580,7 +581,7 @@ class OnlineSPNetProvider:
         self._record_frame(frame)
         return evidence
 
-    def evidence_for(self, frame: FrameInputs) -> DepthEvidence:
+    def evidence_for(self, frame: MappingFrame) -> DepthEvidence:
         evidence = predict_spnet_evidence(
             frame,
             self._predict,
@@ -591,7 +592,7 @@ class OnlineSPNetProvider:
         self._record_frame(frame)
         return evidence
 
-    def evidence_bundle_for(self, frame: FrameInputs) -> SPNetEvidenceBundle:
+    def evidence_bundle_for(self, frame: MappingFrame) -> SPNetEvidenceBundle:
         bundle = predict_spnet_evidence_bundle(
             frame,
             self._predict,
@@ -602,7 +603,7 @@ class OnlineSPNetProvider:
         self._record_frame(frame)
         return bundle
 
-    def _record_frame(self, frame: FrameInputs) -> None:
+    def _record_frame(self, frame: MappingFrame) -> None:
         self._identity = replace(
             self._identity,
             frame_grids=(*self._identity.frame_grids, SPNetFrameGrid(
@@ -681,7 +682,7 @@ def _spnet_prediction_quality_check(
 
 
 def predict_spnet_dense_evidence(
-    frame: FrameInputs,
+    frame: MappingFrame,
     predictor: SPNetPredictor | Callable[[torch.Tensor, torch.Tensor, torch.Tensor], torch.Tensor],
     *,
     depth_scale_m: float,
@@ -736,7 +737,6 @@ def predict_spnet_dense_evidence(
         depth,
         valid,
         confidence_map,
-        raw.input_source_family,
     )
 
 
@@ -762,7 +762,6 @@ def build_spnet_blind_evidence(
     if fused is not None and (
         fused.source_type != pairs[center.source_type]
         or fused.depth_m.shape != depth.shape
-        or fused.input_source_family != center.input_source_family
     ):
         raise ValueError("SPNet fused evidence is incompatible")
     confidence_value = float(confidence)
@@ -789,12 +788,11 @@ def build_spnet_blind_evidence(
         depth,
         valid,
         confidence_map,
-        center.input_source_family,
     )
 
 
 def predict_spnet_evidence(
-    frame: FrameInputs,
+    frame: MappingFrame,
     predictor: (
         SPNetPredictor
         | Callable[[torch.Tensor, torch.Tensor, torch.Tensor], torch.Tensor]
@@ -815,7 +813,7 @@ def predict_spnet_evidence(
 
 
 def predict_spnet_evidence_bundle(
-    frame: FrameInputs,
+    frame: MappingFrame,
     predictor: (
         SPNetPredictor
         | Callable[[torch.Tensor, torch.Tensor, torch.Tensor], torch.Tensor]

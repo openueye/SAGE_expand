@@ -17,22 +17,21 @@ from sage.data.providers.spnet_cache import (
     write_dense_spnet_cache,
 )
 from sage.foundation.contracts import (
-    CameraIntrinsics,
     DepthEvidence,
-    FrameInputs,
     GrowthInputs,
-    InputSourceFamily,
     MappingObservation,
-    Pose,
     SourceType,
 )
+from sage.core_input import MappingFrame
+
+from helpers import intrinsics_matrix, mapping_frame
 from sage.foundation.hashing import sha256_file
 from sage.mapping.mapper import MappingRun, mapping_spnet_evidence
 from sage.mapping.mapping_artifacts import _validate_run
 from sage.refinement.refinement_run import _load_mapping_dense_cache
 
 
-def _frame() -> FrameInputs:
+def _frame() -> MappingFrame:
     height = width = 8
     center_depth = np.zeros((height, width), dtype=np.float32)
     center_depth[::4, ::4] = 5.0
@@ -42,26 +41,18 @@ def _frame() -> FrameInputs:
         center_depth,
         center_valid,
         center_valid.astype(np.float32),
-        InputSourceFamily.LIDAR_WORLD,
     )
-    return FrameInputs(
-        4,
-        "000004",
-        4,
-        CameraIntrinsics(width, height, 10.0, 10.0, 4.0, 4.0),
-        Pose(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0),
-        np.full((height, width, 3), 0.5, dtype=np.float32),
-        MappingObservation(
+    return mapping_frame(
+        frame_index=4,
+        timestamp_ns=4,
+        rgb=np.full((height, width, 3), 0.5, dtype=np.float32),
+        intrinsics=intrinsics_matrix(10.0, 10.0, 4.0, 4.0),
+        mapping=MappingObservation(
             center_depth.copy(),
-            np.where(
-                center_valid,
-                int(SourceType.LIDAR_CENTER),
-                255,
-            ).astype(np.uint8),
+            np.where(center_valid, int(SourceType.LIDAR_CENTER), 255).astype(np.uint8),
             center_valid.astype(np.float32),
-            InputSourceFamily.LIDAR_WORLD,
         ),
-        GrowthInputs((center,)),
+        growth=GrowthInputs((center,)),
     )
 
 
@@ -136,7 +127,7 @@ class _FallbackProvider:
         self.identity = _identity()
         self.calls = 0
 
-    def dense_evidence_for(self, frame: FrameInputs) -> DepthEvidence:
+    def dense_evidence_for(self, frame: MappingFrame) -> DepthEvidence:
         self.calls += 1
         depth = np.full(frame.rgb.shape[:2], 6.0, dtype=np.float32)
         valid = np.ones_like(depth, dtype=np.bool_)
@@ -145,7 +136,6 @@ class _FallbackProvider:
             depth,
             valid,
             np.full_like(depth, 0.4),
-            InputSourceFamily.LIDAR_WORLD,
         )
 
 
@@ -154,7 +144,7 @@ class _LegacyMappingProvider:
         self.identity = _identity()
         self.calls = 0
 
-    def evidence_for(self, frame: FrameInputs) -> DepthEvidence:
+    def evidence_for(self, frame: MappingFrame) -> DepthEvidence:
         self.calls += 1
         depth = np.full(frame.rgb.shape[:2], 7.0, dtype=np.float32)
         valid = np.ones_like(depth, dtype=np.bool_)
@@ -163,7 +153,6 @@ class _LegacyMappingProvider:
             depth,
             valid,
             np.full_like(depth, 0.4),
-            InputSourceFamily.LIDAR_WORLD,
         )
 
 
@@ -201,15 +190,13 @@ def test_dense_spnet_cache_round_trip_reuses_cached_frames(tmp_path) -> None:
     fallback = _FallbackProvider()
     provider = ReusingDenseSPNetProvider(cache, fallback)
 
-    first_frame = FrameInputs(
-        0,
-        "000000",
-        frame.timestamp_ns,
-        frame.intrinsics,
-        frame.pose,
-        frame.rgb,
-        frame.mapping,
-        frame.growth,
+    first_frame = mapping_frame(
+        frame_index=0,
+        timestamp_ns=frame.timestamp_ns,
+        rgb=frame.rgb,
+        intrinsics=intrinsics_matrix(10.0, 10.0, 4.0, 4.0),
+        mapping=frame.mapping,
+        growth=frame.growth,
     )
     live = provider.dense_evidence_for(first_frame)
     reused = provider.dense_evidence_for(frame)

@@ -3,11 +3,40 @@ seed: 0
 runtime:
   model_root: ../../SAGE-models
   require_clean_worktree: false
+  prefetch_depth: 4
 
 input:
-  resize_width: 800
-  resize_height: 648
-  stream_queue_size: 1
+  type: rosbag2
+  rosbag: /home/DL/Projects/02_Thesis/03_Datasets/001_rosbags/Ferrari1
+  calibration: /home/DL/Projects/02_Thesis/03_Datasets/001_rosbags/Ferrari1/calibration.yaml
+  topics:
+    lidar: /odin1/cloud_slam
+    image: /odin1/image/compressed
+    odometry: /odin1/odometry
+  lidar:
+    # cloud_slam publishes each scan already registered into the odometry
+    # reference frame; the pose chain must not be applied a second time.
+    points_frame: reference_frame
+    enable_fused: true
+  synchronization:
+    anchor: image
+    timestamp_policy: header_stamp
+    lidar_association: nearest_to_anchor
+    max_lidar_skew_ms: 20.0
+    pose_interpolation: linear_slerp
+    max_pose_gap_ms: 100.0
+    allow_pose_extrapolation: false
+  fusion:
+    policy: centered_window
+    window: 5
+    max_age_ms: 500.0
+    z_buffer: nearest
+    conflict_threshold_m: 1.0
+    current_scan_priority: true
+    warmup_policy: drop_incomplete_window
+  depth:
+    min_depth_m: 0.1
+    max_depth_m: 200.0
 
 spnet:
   model_id: spnet-large-300
