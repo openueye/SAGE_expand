@@ -265,7 +265,13 @@ class ImageRectifier:
         width, height = calibration.raw_size
         self._source_size = (width, height)
         self._output_camera = calibration.output_camera
-        valid = (map_x >= 0.0) & (map_x <= width - 1) & (map_y >= 0.0) & (map_y <= height - 1)
+        # Half a pixel of slack at the border: a source coordinate of exactly
+        # width-1 can land at width-1+1e-7, and dropping it would blacken the
+        # outer row and column of an otherwise fully covered image.
+        valid = (
+            (map_x >= -0.5) & (map_x <= width - 0.5)
+            & (map_y >= -0.5) & (map_y <= height - 0.5)
+        )
         x = np.clip(map_x, 0, width - 1)
         y = np.clip(map_y, 0, height - 1)
         self._x0 = np.floor(x).astype(np.int32)
