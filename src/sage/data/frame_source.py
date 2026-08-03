@@ -19,6 +19,7 @@ from ..foundation.contracts import (
     Pose,
     SourceType,
 )
+from .rosbag.streaming import BoundedResultStream
 from .scene import (
     PreparedScene,
     _resize_nearest,
@@ -29,6 +30,11 @@ from .scene import (
 )
 from ..foundation.receipt_contract import REPLAY_RECEIPT_SCHEMA
 from ..foundation.source_policy import SOURCE_POLICY_VERSION, descriptor_for_type
+
+# Prepared Scene decode (PNG open + up to 4 resizes) measured ~90ms/frame and was
+# entirely serial inside the training loop. Depth 4 is enough for the producer
+# thread to stay ahead of one mapping commit.
+_PREFETCH_DEPTH = 4
 
 
 class FrameSource(Protocol):
@@ -101,21 +107,28 @@ class PreparedSceneFrameSource:
         first_frame_started = perf_counter()
         first_frame_recorded = False
         self._started = True
+        stream = BoundedResultStream(
+            lambda: self._scene.frames(limit=self._frame_limit),
+            identity={"adapter": "prepared-scene-prefetch-v1"},
+            queue_capacity=_PREFETCH_DEPTH,
+        )
         try:
-            for frame in self._scene.frames(limit=self._frame_limit):
+            for frame in stream.frames():
                 mode = _source_mode_for_frame(frame)
                 if mode is not None and mode != declared_mode:
                     raise ValueError("Prepared Scene frame source family contradicts its manifest")
                 self._source_modes.add(declared_mode)
                 if len(self._source_modes) > 1:
-                    raise ValueError("FrameSource cannot mix raw and SLAM LiDAR source families")
+                    raise ValueError("FrameSource cannot mix LiDAR world source families")
                 self._emitted += 1
                 if not first_frame_recorded:
                     self._runtime_metrics["first_frame_wait_seconds"] = perf_counter() - first_frame_started
                     first_frame_recorded = True
                 yield frame
+            stream.close()
             self._exhausted = True
         except BaseException:
+            stream.abort("PreparedSceneFrameSource frames() failed")
             raise
 
     def prepare_close(self) -> dict[str, object]:
@@ -276,7 +289,7 @@ class OdinBagFixedLagFrameSource:
             center_depth = np.asarray(result.center_depth, dtype=np.float32)
             fused_depth = np.asarray(result.fused_depth, dtype=np.float32)
             frame_intrinsics = target.intrinsics
-            rgb = target.rgb.astype(np.float32) / 255.0
+            rgb = target.rgb
             if self._config.resize_width is not None:
                 output_size = (self._config.resize_width, self._config.resize_height)
                 scale_x = self._config.resize_width / target.intrinsics.width
@@ -293,6 +306,7 @@ class OdinBagFixedLagFrameSource:
                     np.asarray(result.fused_mask, dtype=np.float32), output_size, dtype=np.float32,
                 )
             else:
+                rgb = rgb.astype(np.float32) / 255.0
                 result_mask = np.asarray(result.fused_mask, dtype=np.float32)
             center_valid = center_depth > 0
             fused_valid = result_mask.astype(bool) & (fused_depth > 0)

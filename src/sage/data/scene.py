@@ -70,7 +70,15 @@ def _resize_nearest(array: np.ndarray, size: tuple[int, int], *, dtype: np.dtype
 
 
 def _resize_rgb(array: np.ndarray, size: tuple[int, int]) -> np.ndarray:
-    image = Image.fromarray(np.clip(array * 255.0, 0, 255).astype(np.uint8), mode="RGB")
+    """Bilinear RGB resize returning float32 in [0, 1].
+
+    uint8 input is handed to PIL directly, skipping a full-resolution
+    float<->uint8 round trip that is a no-op for all 256 uint8 levels.
+    """
+    source = np.asarray(array)
+    if source.dtype != np.uint8:
+        source = np.clip(source * 255.0, 0, 255).astype(np.uint8)
+    image = Image.fromarray(source, mode="RGB")
     return np.asarray(image.resize(size, Image.Resampling.BILINEAR), dtype=np.float32) / 255.0
 
 
@@ -219,7 +227,7 @@ class PreparedScene:
                 if not path.is_file():
                     raise ValueError(f"Missing {label} for frame {stem}: {path}")
             with Image.open(image_path) as image:
-                rgb = np.asarray(image.convert("RGB"), dtype=np.float32) / 255.0
+                rgb = np.asarray(image.convert("RGB"))
             center_depth_loaded = np.load(center_path)
             fused_depth_loaded = np.load(fused_path)
             if center_depth_loaded.dtype != np.dtype("<f4") or fused_depth_loaded.dtype != np.dtype("<f4"):
@@ -259,6 +267,8 @@ class PreparedScene:
                 center_valid = _resize_nearest(center_valid, output_size, dtype=np.float32).astype(bool)
                 fused_depth = _resize_nearest(fused_depth, output_size, dtype=np.float32)
                 fused_valid = _resize_nearest(fused_valid, output_size, dtype=np.float32).astype(bool)
+            else:
+                rgb = rgb.astype(np.float32) / 255.0
             mapping_depth = np.where(center_valid, center_depth, np.where(fused_valid, fused_depth, 0.0)).astype(np.float32)
             mapping_sources = np.full(mapping_depth.shape, INVALID_SOURCE_TYPE, dtype=np.uint8)
             mapping_sources[center_valid] = int(center_source_type)
