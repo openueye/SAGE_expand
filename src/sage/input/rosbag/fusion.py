@@ -96,6 +96,10 @@ def build_observations(
     fused_depth = np.where(fused_valid, fused_depth, 0.0).astype(np.float32)
     winner = np.argmin(masked, axis=0)
     age = np.asarray(ages_s, dtype=np.float32)[winner]
+    # No confidence is emitted: per-source confidence is mapping policy, not an
+    # adapter output, so it stays a single configured value per source rather
+    # than something this fusion step decays with age. Support count and age
+    # are recorded for auditing the window, not for weighting it.
     fused = DepthObservation(
         fused_depth,
         fused_valid,
