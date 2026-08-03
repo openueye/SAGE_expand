@@ -7,7 +7,8 @@ from typing import TYPE_CHECKING
 import torch
 
 from ..foundation.config import GaussianInitializationConfig, GrowthConfig
-from ..foundation.contracts import DepthEvidence, FrameInputs, GaussianAppendBatch, GrowthInputs, SourceType
+from ..foundation.contracts import DepthEvidence, GaussianAppendBatch, GrowthInputs, SourceType
+from ..core_input import MappingFrame
 from .geometry import backproject_depth
 from .losses import alpha_normalized_depth
 from ..foundation.source_policy import SOURCE_DESCRIPTORS, descriptor_for_type, descriptors_for_types, source_policy_value
@@ -195,7 +196,7 @@ class GrowthBuilder:
             device=self.device,
         )
 
-    def _frame_needs(self, frame: FrameInputs, rendered: RenderOutput) -> FrameNeeds:
+    def _frame_needs(self, frame: MappingFrame, rendered: RenderOutput) -> FrameNeeds:
         """L1：由渲染结果推出帧级需求。纯函数，与证据源无关。"""
         target_rgb = torch.as_tensor(frame.rgb, dtype=torch.float32, device=self.device)
         rendered_depth = alpha_normalized_depth(rendered.accumulated_depth, rendered.alpha)
@@ -283,7 +284,7 @@ class GrowthBuilder:
 
     def build(
         self,
-        frame: FrameInputs,
+        frame: MappingFrame,
         rendered: RenderOutput,
         *,
         extra_evidences: tuple[DepthEvidence, ...] = (),

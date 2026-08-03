@@ -11,7 +11,7 @@ import gsplat
 import torch
 from torch.nn import functional as F
 
-from ..foundation.contracts import FrameInputs
+from ..core_input import MappingFrame
 from .geometry import rotation_wc
 from ..foundation.hashing import sha256_file
 from .model import TrainableGaussians
@@ -58,7 +58,7 @@ class RenderCameraFields:
 
 
 class Renderer(Protocol):
-    def __call__(self, model: object, frame: FrameInputs) -> RenderOutput: ...
+    def __call__(self, model: object, frame: MappingFrame) -> RenderOutput: ...
 
 
 def _gsplat_extension_path() -> Path:
@@ -102,7 +102,7 @@ def capture_renderer_identity() -> dict[str, object]:
 
 
 def _camera_matrices(
-    frame: FrameInputs, device: torch.device
+    frame: MappingFrame, device: torch.device
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Build the world-to-camera transform and pinhole intrinsics gsplat expects."""
     rotation_cw = rotation_wc(frame.pose, device=device).T
@@ -119,7 +119,7 @@ def _camera_matrices(
 
 
 def prepare_render_camera(
-    frame: FrameInputs,
+    frame: MappingFrame,
     device: torch.device | str,
 ) -> RenderCameraFields:
     view, intrinsics = _camera_matrices(frame, torch.device(device))
@@ -150,7 +150,7 @@ def prepare_render_static(model: TrainableGaussians) -> RenderStaticFields:
 
 def render(
     model: TrainableGaussians,
-    frame: FrameInputs,
+    frame: MappingFrame,
     *,
     static: RenderStaticFields | None = None,
     camera: RenderCameraFields | None = None,
@@ -208,7 +208,7 @@ class CachedRenderer:
     def __call__(
         self,
         model: TrainableGaussians,
-        frame: FrameInputs,
+        frame: MappingFrame,
         *,
         static: RenderStaticFields | None = None,
     ) -> RenderOutput:

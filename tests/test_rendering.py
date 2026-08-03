@@ -16,39 +16,18 @@ from sage.engine.rendering import (
     prepare_render_static,
     render,
 )
-from sage.foundation.contracts import (
-    CameraIntrinsics,
-    FrameInputs,
-    GrowthInputs,
-    INVALID_SOURCE_TYPE,
-    MappingObservation,
-    Pose,
-)
+from sage.core_input import MappingFrame
+
+from helpers import intrinsics_matrix, mapping_frame, pose_matrix
 from sage.foundation.identity_schema import _DEPENDENCY_FIELDS
 
 
-def _frame() -> FrameInputs:
+def _frame() -> MappingFrame:
     height = width = 32
-    return FrameInputs(
-        index=0,
-        stem="renderer-test",
-        timestamp_ns=0,
-        intrinsics=CameraIntrinsics(
-            width,
-            height,
-            32.0,
-            32.0,
-            width / 2,
-            height / 2,
-        ),
-        pose=Pose(0.1, -0.05, 0.0, 0.0, 0.0, 0.0, 1.0),
+    return mapping_frame(
         rgb=np.zeros((height, width, 3), dtype=np.float32),
-        mapping=MappingObservation(
-            np.zeros((height, width), dtype=np.float32),
-            np.full((height, width), INVALID_SOURCE_TYPE, dtype=np.uint8),
-            np.zeros((height, width), dtype=np.float32),
-        ),
-        growth=GrowthInputs(()),
+        intrinsics=intrinsics_matrix(32.0, 32.0, width / 2, height / 2),
+        reference_from_camera=pose_matrix((0.1, -0.05, 0.0)),
     )
 
 

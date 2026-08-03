@@ -69,7 +69,7 @@ def _source_masks(target_mapping: MappingObservation, device: torch.device) -> d
     source_types = torch.as_tensor(target_mapping.source_types, dtype=torch.uint8, device=device)
     return {
         "center": source_types == int(SourceType.LIDAR_CENTER),
-        "fused5": source_types == int(SourceType.LIDAR_FUSED),
+        "fused": source_types == int(SourceType.LIDAR_FUSED),
     }
 
 
@@ -247,24 +247,24 @@ def mapping_loss(
         support * masks["center"].to(dtype=rendered_depth.dtype),
         epsilon=policy.epsilon,
     )
-    geo_fused5 = _weighted_mean(
+    geo_fused = _weighted_mean(
         residual,
-        support * masks["fused5"].to(dtype=rendered_depth.dtype),
+        support * masks["fused"].to(dtype=rendered_depth.dtype),
         epsilon=policy.epsilon,
     )
     center_mae = _masked_mean(
         residual * observation_valid.to(residual.dtype),
         target_valid & masks["center"],
     )
-    fused5_mae = _masked_mean(
+    fused_mae = _masked_mean(
         residual * observation_valid.to(residual.dtype),
-        target_valid & masks["fused5"],
+        target_valid & masks["fused"],
     )
     a0 = policy.alpha_support_a0
 
     hit_center = zero
-    hit_fused5 = zero
-    hit = hit_center + hit_fused5
+    hit_fused = zero
+    hit = hit_center + hit_fused
     alpha_mean, alpha_p10, alpha_p50, alpha_below_a0, _ = _alpha_statistics(
         rendered_alpha,
         target_valid,
@@ -276,8 +276,8 @@ def mapping_loss(
         rendered_alpha, target_valid & masks["center"], a0=a0, reference=rendered_depth,
         collect_quantiles=collect_diagnostics,
     )
-    fused5_alpha = _alpha_statistics(
-        rendered_alpha, target_valid & masks["fused5"], a0=a0, reference=rendered_depth,
+    fused_alpha = _alpha_statistics(
+        rendered_alpha, target_valid & masks["fused"], a0=a0, reference=rendered_depth,
         collect_quantiles=collect_diagnostics,
     )
     return total, {
@@ -288,17 +288,17 @@ def mapping_loss(
         "ssim": ssim,
         "depth": depth,
         "geo_center": geo_center,
-        "geo_fused5": geo_fused5,
+        "geo_fused": geo_fused,
         "hit": hit,
         "hit_center": hit_center,
-        "hit_fused5": hit_fused5,
+        "hit_fused": hit_fused,
         "depth_valid_pixels": loss_valid.to(dtype=rendered_depth.dtype).sum(),
         "depth_valid_center_pixels": (loss_valid & masks["center"]).to(dtype=rendered_depth.dtype).sum(),
-        "depth_valid_fused5_pixels": (loss_valid & masks["fused5"]).to(dtype=rendered_depth.dtype).sum(),
+        "depth_valid_fused_pixels": (loss_valid & masks["fused"]).to(dtype=rendered_depth.dtype).sum(),
         "depth_support_weight_sum": support.sum(),
         "depth_coverage_valid_pixels": target_valid.to(dtype=rendered_depth.dtype).sum(),
         "depth_center_mae": center_mae,
-        "depth_fused5_mae": fused5_mae,
+        "depth_fused_mae": fused_mae,
         "depth_coverage": depth_coverage,
         "depth_mean_alpha": _masked_mean(
             rendered_alpha,
@@ -311,9 +311,9 @@ def mapping_loss(
         "alpha_center_mean": center_alpha[0],
         "alpha_center_p10": center_alpha[1],
         "alpha_center_p50": center_alpha[2],
-        "alpha_fused5_mean": fused5_alpha[0],
-        "alpha_fused5_p10": fused5_alpha[1],
-        "alpha_fused5_p50": fused5_alpha[2],
+        "alpha_fused_mean": fused_alpha[0],
+        "alpha_fused_p10": fused_alpha[1],
+        "alpha_fused_p50": fused_alpha[2],
     }
 
 

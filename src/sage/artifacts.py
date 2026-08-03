@@ -8,13 +8,13 @@ import numpy as np
 import torch
 
 from .data.providers.spnet import validate_spnet_identity_payload
+from .input.identity import InputIdentities
 from .foundation.identity_schema import DependencyIdentity, _valid_environment_locks
 from .foundation.artifact_versions import (
     APPEARANCE_REFINEMENT_CHECKPOINT_VERSION,
     CHECKPOINT_VERSION,
     SOURCE_CHECKPOINT_VERSIONS,
 )
-from .foundation.receipt_contract import validate_sage_completion_receipt
 from .foundation.source_policy import SOURCE_POLICY_VERSION
 from .refinement.appearance_config import (
     APPEARANCE_REFINEMENT_SCHEMA,
@@ -41,7 +41,6 @@ _BASE_FIELDS = {
     "last_commit",
     "identity_snapshot",
     "optimization",
-    "completion_receipt",
 }
 _SOURCE_COMMIT_FIELDS = {
     "frame_index",
@@ -91,26 +90,26 @@ _DIAGNOSTIC_FIELDS = {
     "loss": {
         "photo",
         "geo_center",
-        "geo_fused5",
+        "geo_fused",
         "hit_center",
-        "hit_fused5",
+        "hit_fused",
         "depth_coverage",
         "total",
     },
     "depth": {
         "valid_pixels",
         "valid_center_pixels",
-        "valid_fused5_pixels",
+        "valid_fused_pixels",
         "center_mae",
-        "fused5_mae",
+        "fused_mae",
     },
     "alpha": {
         "center_mean",
         "center_p10",
         "center_p50",
-        "fused5_mean",
-        "fused5_p10",
-        "fused5_p50",
+        "fused_mean",
+        "fused_p10",
+        "fused_p50",
         "below_a0_fraction",
     },
 }
@@ -474,14 +473,12 @@ def _validate_common_checkpoint(payload: dict[str, object]) -> None:
     snapshot = payload.get("identity_snapshot")
     snapshot_fields = {
         "config_sha256",
-        "prepared_manifest_sha256",
-        "transform_contract_sha256",
-        "scene_content_sha256",
-        "source_mode",
+        "training_config_identity",
+        "input",
+        "input_contract",
         "source_policy_version",
         "producer_code",
         "dependencies",
-        "frame_source",
         "environment_locks",
     }
     if (
@@ -516,18 +513,7 @@ def _validate_common_checkpoint(payload: dict[str, object]) -> None:
         }
     ):
         raise ValueError("SAGE checkpoint optimization identity is invalid")
-    frame_source = snapshot.get("frame_source")
-    adapter = (
-        frame_source.get("adapter")
-        if isinstance(frame_source, dict)
-        else None
-    )
-    validate_sage_completion_receipt(
-        payload.get("completion_receipt"),
-        expected_adapter=adapter,
-        expected_source_mode=snapshot.get("source_mode"),
-        require_bag_exhausted=adapter == "rosbag-fixed-lag-v1",
-    )
+    InputIdentities.from_payload(snapshot["input"])
 
 
 def load_checkpoint(path: Path) -> dict[str, object]:

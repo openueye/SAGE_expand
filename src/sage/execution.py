@@ -67,28 +67,9 @@ def publish_json_atomic(
             temporary.unlink(missing_ok=True)
 
 
-def formal_train_command(
-    *,
-    config_path: Path,
-    output_dir: Path,
-    device: str,
-    input_format: str = "prepared-scene",
-    data_root: Path | None = None,
-    calibration: Path | None = None,
-    write_through: Path | None = None,
-    preparation_profile: str = "odin1-lidar-world-native-v1",
-) -> list[str]:
-    if input_format not in {"prepared-scene", "odin-rosbag"}:
-        raise ValueError("input_format must be prepared-scene or odin-rosbag")
-    if input_format == "prepared-scene" and (
-        calibration is not None or write_through is not None
-    ):
-        raise ValueError("Prepared Scene commands cannot declare ROSBAG-only paths")
-    if input_format == "odin-rosbag" and (
-        data_root is None or calibration is None
-    ):
-        raise ValueError("Odin ROSBAG commands require data and calibration paths")
-    command = [
+def formal_train_command(*, config_path: Path, output_dir: Path, device: str) -> list[str]:
+    """The exact child invocation; the input comes from the config alone."""
+    return [
         sys.executable,
         "-m",
         "sage.mapping.mapping_worker",
@@ -100,17 +81,7 @@ def formal_train_command(
         "--device",
         str(device),
         "--execution-child",
-        "--input-format",
-        input_format,
     ]
-    if data_root is not None:
-        command.extend(["--data-root", str(Path(data_root).resolve())])
-    if calibration is not None:
-        command.extend(["--calibration", str(Path(calibration).resolve())])
-    if write_through is not None:
-        command.extend(["--write-through", str(Path(write_through).resolve())])
-    command.extend(["--preparation-profile", preparation_profile])
-    return command
 
 
 def _rss_bytes(value: int) -> int:
@@ -240,40 +211,24 @@ def _valid_formal_train_command(
     config_path: Path,
     output_dir: Path,
 ) -> bool:
+    """The child command must be exactly the entrypoint we would build today.
+
+    The input is defined by the config alone, so the command carries no input
+    arguments: any extra option means the receipt describes a different run.
+    """
     if not isinstance(command, list) or not all(isinstance(item, str) for item in command):
         return False
-    if len(command) < 13 or (len(command) - 11) % 2:
+    device_index = 9
+    if len(command) <= device_index or not command[device_index]:
         return False
-    tail = command[11:]
-    names = tail[::2]
-    values = tail[1::2]
-    if len(set(names)) != len(names) or any(not name.startswith("--") for name in names):
-        return False
-    options = dict(zip(names, values))
-    input_format = options.get("--input-format")
-    data_root = Path(options["--data-root"]) if "--data-root" in options else None
-    calibration = Path(options["--calibration"]) if "--calibration" in options else None
-    write_through = Path(options["--write-through"]) if "--write-through" in options else None
-    if "--preparation-profile" not in options or set(options) - {
-        "--input-format", "--data-root", "--calibration", "--write-through", "--preparation-profile",
-    }:
-        return False
-    try:
-        expected = formal_train_command(
-            config_path=config_path,
-            output_dir=output_dir,
-            device=command[9],
-            input_format=str(input_format),
-            data_root=data_root,
-            calibration=calibration,
-            write_through=write_through,
-            preparation_profile=options["--preparation-profile"],
-        )
-    except ValueError:
-        return False
+    expected = formal_train_command(
+        config_path=config_path,
+        output_dir=output_dir,
+        device=command[device_index],
+    )
     normalized = [str(Path(command[0]).resolve()), *command[1:]]
     expected[0] = str(Path(expected[0]).resolve())
-    return bool(command[9]) and normalized == expected
+    return normalized == expected
 
 
 def validate_execution_receipt(

@@ -13,10 +13,9 @@ from ..foundation.contracts import (
     DenseGeometryPrior,
     DensePriorDiagnostics,
     DepthEvidence,
-    FrameInputs,
     MappingObservation,
-    SourceType,
-)
+    SourceType,)
+from ..core_input import MappingFrame
 from .dense_geometry_config import (
     DENSE_ALIGNMENT_NONWORSENING_V2,
     DensePriorPolicy,
@@ -24,11 +23,11 @@ from .dense_geometry_config import (
 
 
 def prepare_dense_priors(
-    frames: tuple[FrameInputs, ...],
+    frames: tuple[MappingFrame, ...],
     provider: DenseSPNetProvider,
     policy: DensePriorPolicy,
     *,
-    progress_callback: Callable[[int, int, FrameInputs], None] | None = None,
+    progress_callback: Callable[[int, int, MappingFrame], None] | None = None,
 ) -> dict[int, DenseGeometryPrior]:
     """Materialize aligned dense priors before a Gaussian model occupies CUDA."""
     priors: dict[int, DenseGeometryPrior] = {}

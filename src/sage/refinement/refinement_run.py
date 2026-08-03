@@ -13,7 +13,7 @@ from time import perf_counter
 import torch
 
 from ..artifacts import load_checkpoint
-from ..data.frame_source import frame_source_for_config
+from ..core_input import CoreObservationAssembler
 from ..data.providers.spnet import OnlineSPNetProvider
 from ..data.providers.spnet_cache import (
     DenseSPNetCache,
@@ -37,16 +37,13 @@ from ..foundation.artifact_versions import (
 )
 from ..foundation.code_identity import repository_code_identity
 from ..foundation.config import (
-    ALL_ACCEPTED_FRAME_LIMIT,
     MappingLossConfig,
     SageConfig,
 )
-from ..foundation.contracts import DenseGeometryPrior, FrameInputs, SourceType
+from ..foundation.contracts import DenseGeometryPrior, SourceType
+from ..core_input import MappingFrame
 from ..foundation.hashing import sha256_file
-from ..foundation.identity_schema import (
-    normalize_dataset_identity,
-    validate_dataset_identity,
-)
+from ..foundation.identity_schema import validate_dataset_identity
 from .appearance_config import AppearanceRefinementConfig
 from .appearance_refinement import (
     AppearanceExposureNuisance,
@@ -162,7 +159,7 @@ def verify_frozen_tensors(
 
 def _appearance_objective_from_render(
     output: RenderOutput,
-    frame: FrameInputs,
+    frame: MappingFrame,
     refinement: AppearanceRefinementConfig,
     loss_policy: MappingLossConfig,
     *,
@@ -229,7 +226,7 @@ def _appearance_objective_from_render(
 
 
 def _dense_prior_record(
-    frames: tuple[FrameInputs, ...],
+    frames: tuple[MappingFrame, ...],
     priors: dict[int, DenseGeometryPrior],
     *,
     provider_identity: dict[str, object],
@@ -372,39 +369,22 @@ def _consume_mapping_frames(
     config: SageConfig,
     checkpoint_identity: dict[str, object],
 ) -> tuple[tuple[object, ...], dict[str, object]]:
-    source = frame_source_for_config(
-        config.scene,
-        frame_limit=ALL_ACCEPTED_FRAME_LIMIT,
-        non_formal=True,
+    """Replay the canonical input and keep only the frames mapping committed."""
+    resolved = config.input.create_adapter().preflight()
+    validate_dataset_identity(checkpoint_identity, resolved.identities)
+    assembler = CoreObservationAssembler(resolved.contract.canonical.sources)
+    frames = tuple(
+        frame
+        for frame in assembler.frames(resolved.frames())
+        if is_mapping_frame(frame.index, map_every=config.mapping.map_every)
     )
-    prepared = False
-    try:
-        validate_dataset_identity(
-            checkpoint_identity,
-            normalize_dataset_identity(source.start_identity()),
-        )
-        frames = tuple(
-            frame
-            for frame in source.frames()
-            if is_mapping_frame(
-                frame.index,
-                map_every=config.mapping.map_every,
-            )
-        )
-        if not frames:
-            raise ValueError(
-                "Input emitted no mapping frames for appearance refinement"
-            )
-        receipt = source.prepare_close()
-        prepared = True
-        source.commit()
-        return frames, receipt
-    except BaseException as exc:
-        if prepared:
-            source.rollback_commit(exc)
-        else:
-            source.abort(exc)
-        raise
+    if not frames:
+        raise ValueError("Input emitted no mapping frames for appearance refinement")
+    return frames, {
+        "adapter_type": resolved.contract.adapter_type,
+        "identities": resolved.identities.payload(),
+        "accepted_frames": resolved.report.accepted_frames,
+    }
 
 
 def _load_mapping_dense_cache(
@@ -469,15 +449,18 @@ def run_appearance_refinement(
     destination = Path(output).resolve()
     source_checkpoint = Path(checkpoint).resolve()
     base_config_sha256 = sha256_file(config.config_path)
-    refinement_sha256 = base_config_sha256
+    # The training identity, not the config file: a run must stay reusable when
+    # only the input section differs between two equivalent canonical paths.
+    training_identity = config.training_config_identity()
+    refinement_sha256 = training_identity
     if destination.exists():
         raise ValueError(
             f"Refusing an existing appearance output path: {destination}"
         )
     source_payload = load_checkpoint(source_checkpoint)
     if (
-        source_payload["identity_snapshot"]["config_sha256"]
-        != base_config_sha256
+        source_payload["identity_snapshot"]["training_config_identity"]
+        != training_identity
     ):
         raise ValueError(
             "Source checkpoint configuration does not match "
@@ -495,7 +478,7 @@ def run_appearance_refinement(
     source_sha256 = sha256_file(source_checkpoint)
     try:
         checkpoint_identity = source_payload["identity_snapshot"]
-        mapping_frames, training_receipt = _consume_mapping_frames(
+        mapping_frames, training_input = _consume_mapping_frames(
             config,
             checkpoint_identity,
         )
@@ -518,7 +501,7 @@ def run_appearance_refinement(
         def report_dense_prior(
             completed: int,
             total: int,
-            _frame: FrameInputs,
+            _frame: MappingFrame,
         ) -> None:
             if (
                 completed % _DENSE_PRIOR_PROGRESS_EVERY == 0
@@ -615,7 +598,7 @@ def run_appearance_refinement(
                 ),
                 "source_masks": {
                     "center": source_types == int(SourceType.LIDAR_CENTER),
-                    "fused5": source_types == int(SourceType.LIDAR_FUSED),
+                    "fused": source_types == int(SourceType.LIDAR_FUSED),
                 },
                 "dense_normal_static": prepare_dense_normal_static(
                     dense_priors[frame.index],
@@ -741,7 +724,7 @@ def run_appearance_refinement(
                 else {}
             ),
             "frozen_tensor_verification": frozen_verification,
-            "completion_receipts": {"training_frames": training_receipt},
+            "input": training_input,
             "duration_seconds": perf_counter() - started,
             "timings": {
                 "dense_prior_seconds": dense_prior_seconds,

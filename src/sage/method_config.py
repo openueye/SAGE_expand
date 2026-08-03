@@ -8,14 +8,12 @@ from typing import Any
 
 import yaml
 
-from .data.scene import PreparedScene
-from .foundation.prepared_scene_contract import PROFILE_CONTRACTS
 from .foundation.config import (
     ALPHA_NORMALIZED_DEPTH_POLICY,
     ALL_ACCEPTED_FRAME_POLICY,
     FROZEN_MAPPING_LOSS_VARIANT,
     NATIVE_FULL_FRAME_PAD_CROP_V1,
-    ODIN_GLOBAL_CURRENT_ANCHORED_VARIANT,
+    GLOBAL_CURRENT_ANCHORED_VARIANT,
     GaussianInitializationConfig,
     GrowthConfig,
     GrowthSourcesConfig,
@@ -24,8 +22,8 @@ from .foundation.config import (
     PruningConfig,
     ResidualThreshold,
     SPNetOnlineConfig,
+    InputConfig,
     SageConfig,
-    SceneConfig,
 )
 from .refinement.appearance_config import (
     APPEARANCE_REFINEMENT_SCHEMA,
@@ -48,7 +46,7 @@ _ROOT_FIELDS = {
     "evaluation",
 }
 _OPTIONAL_ROOT_FIELDS = {"runtime"}
-_RUNTIME_FIELDS = {"model_root", "require_clean_worktree"}
+_RUNTIME_FIELDS = {"model_root", "require_clean_worktree", "prefetch_depth"}
 
 
 def _section(
@@ -93,46 +91,6 @@ def _runtime_section(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 @dataclass(frozen=True)
-class SageInput:
-    """One concrete input adapter selected for a complete SAGE run."""
-
-    kind: str
-    root: Path
-    calibration: Path | None = None
-    write_through: Path | None = None
-    preparation_profile: str = "odin1-lidar-world-native-v1"
-
-    def __post_init__(self) -> None:
-        if self.kind not in {"rosbag", "prepared_scene"}:
-            raise ValueError("SAGE input must be rosbag or prepared_scene")
-        object.__setattr__(self, "root", Path(self.root).resolve())
-        if self.kind == "rosbag":
-            if self.calibration is None:
-                raise ValueError("ROSBAG input requires camera/LiDAR calibration")
-            if self.preparation_profile not in PROFILE_CONTRACTS:
-                raise ValueError(f"Unsupported preparation_profile: {self.preparation_profile}")
-            object.__setattr__(
-                self,
-                "calibration",
-                Path(self.calibration).resolve(),
-            )
-            if self.write_through is not None:
-                object.__setattr__(
-                    self,
-                    "write_through",
-                    Path(self.write_through).resolve(),
-                )
-        elif self.calibration is not None or self.write_through is not None:
-            raise ValueError(
-                "Prepared Scene input cannot declare ROSBAG-only paths"
-            )
-
-    @property
-    def internal_format(self) -> str:
-        return "odin-rosbag" if self.kind == "rosbag" else "prepared-scene"
-
-
-@dataclass(frozen=True)
 class SageMethodConfig:
     """The single configuration interface for complete SAGE training."""
 
@@ -164,11 +122,9 @@ class SageMethodConfig:
             )
         if type(payload["seed"]) is not int or payload["seed"] < 0:
             raise ValueError("SAGE seed must be a non-negative integer")
-        input_config = _section(
-            payload,
-            "input",
-            {"resize_width", "resize_height", "stream_queue_size"},
-        )
+        input_config = payload["input"]
+        if not isinstance(input_config, dict) or not isinstance(input_config.get("type"), str):
+            raise ValueError("SAGE input must be an object declaring a type")
         spnet = _section(
             payload,
             "spnet",
@@ -343,53 +299,22 @@ class SageMethodConfig:
             ),
         }
 
-    def _scene(self, source: SageInput) -> SceneConfig:
-        require_clean_worktree = self.runtime_require_clean_worktree()
-        if source.kind == "prepared_scene":
-            scene = PreparedScene.from_root(source.root).config
-            return replace(
-                scene,
-                resize_width=self.input["resize_width"],
-                resize_height=self.input["resize_height"],
-                stream_queue_size=self.input["stream_queue_size"],
-                require_clean_worktree=require_clean_worktree,
-            )
-        contract = PROFILE_CONTRACTS[source.preparation_profile]["source"]
-        return SceneConfig(
-            scene_dir=None,
-            prepared_scene_dir=None,
-            center_depth_dir=None,
-            fused5_depth_dir=None,
-            fused5_mask_dir=None,
-            resize_width=self.input["resize_width"],
-            resize_height=self.input["resize_height"],
-            enabled_depth_sources=(
-                contract["center_source_type"],
-                contract["fused_source_type"],
-            ),
-            input_adapter="rosbag-fixed-lag-v1",
-            rosbag_dir=source.root,
-            calibration_path=source.calibration,
-            write_through_dir=source.write_through,
-            stream_queue_size=self.input["stream_queue_size"],
-            preparation_profile=source.preparation_profile,
-            source_mode=contract["mode"],
-            fusion_policy=PROFILE_CONTRACTS[source.preparation_profile]["depth"]["fusion_policy"],
-            require_clean_worktree=require_clean_worktree,
+    def _input(self) -> InputConfig:
+        return InputConfig(
+            payload=self.input,
+            base_dir=self.path.parent,
+            require_clean_worktree=self.runtime_require_clean_worktree(),
+            prefetch_depth=int(self.runtime.get("prefetch_depth", 4)),
         )
 
-    def resolve(
-        self,
-        source: SageInput,
-        output: Path,
-    ) -> SageConfig:
+    def resolve(self, output: Path) -> SageConfig:
         parts = self._structure_parts()
         evaluation = self.evaluation
         return SageConfig(
             config_path=self.path,
             output_dir=Path(output).resolve(),
             seed=self.seed,
-            scene=self._scene(source),
+            input=self._input(),
             growth_sources=GrowthSourcesConfig(spnet=parts["spnet"]),
             growth=parts["growth"],
             pruning=parts["pruning"],
@@ -401,13 +326,13 @@ class SageMethodConfig:
                 prune_every=self.mapping["prune_every"],
                 prune_stop_after=self.mapping["prune_stop_after"],
                 learning_rates=self.mapping["learning_rates"],
-                optimization_variant=ODIN_GLOBAL_CURRENT_ANCHORED_VARIANT,
+                optimization_variant=GLOBAL_CURRENT_ANCHORED_VARIANT,
                 evaluation_depth_policy=ALPHA_NORMALIZED_DEPTH_POLICY,
                 evaluation_min_alpha=evaluation["min_alpha"],
                 evaluation_epsilon=evaluation["epsilon"],
                 evaluation_alpha_support_a0=evaluation["alpha_support"],
                 evaluation_hit_target_center=evaluation["hit_target_center"],
-                evaluation_hit_target_fused5=evaluation["hit_target_fused"],
+                evaluation_hit_target_fused=evaluation["hit_target_fused"],
             ),
             gaussian_initialization=GaussianInitializationConfig(
                 opacity=self.mapping["initial_opacity"],

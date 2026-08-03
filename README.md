@@ -1,9 +1,10 @@
 # SAGE Expand
 
 `SAGE_expand` is the thesis engineering variant of SAGE (Structure-Anchored
-Gaussian Enhancement). One command turns a calibrated finite Odin ROSBAG, or a
-compatible Prepared Scene, into a structure map, an appearance-refined final
-map, and an evaluation over every accepted frame. LiDAR remains the metric
+Gaussian Enhancement). One command turns a calibrated finite ROS 2 bag, or a
+Prepared Scene, into a structure map, an appearance-refined final map, and an
+evaluation over every accepted frame. Both inputs are equal peers: a bag trains
+end to end without being converted first, and a Prepared Scene needs no ROS. LiDAR remains the metric
 authority; SPNet supplies guarded dense-normal supervision only, and both
 SPNet/AlexNet artifacts are required runtime dependencies for mapping and
 evaluation.
@@ -52,17 +53,49 @@ The path is relative to the YAML file and overrides `SAGE_MODEL_ROOT`.
 ## Run
 
 ```bash
-sage train \
-  --config configs/sage.yaml \
-  --rosbag /path/to/odin-bag \
-  --calibration /path/to/cam_in_ex.txt \
-  --output outputs/sage \
-  --device cuda
+sage train --config configs/sage.yaml --output outputs/sage --device cuda
 ```
 
-Use `--prepared-scene /path/to/prepared-scene` instead of the ROSBAG arguments
-when replaying a prepared input. Add `--preflight` to validate the input, CUDA,
-renderer, models, and output path without training.
+The input is defined entirely by the configuration's `input:` section, so the
+command line carries run control only. Add `--preflight` to validate the input,
+CUDA, renderer, models, and output path without training.
+
+A ROS 2 bag needs its three topics named explicitly and a canonical
+`calibration.yaml` (convert a `cam_in_ex.txt` with
+`tools/convert_calibration.py`):
+
+```yaml
+input:
+  type: rosbag2
+  rosbag: /path/to/bag
+  calibration: /path/to/calibration.yaml
+  topics:
+    lidar: /points
+    image: /camera/image/compressed
+    odometry: /odom
+  lidar:
+    # lidar_frame for raw scans; reference_frame when the producer already
+    # registered each scan into the odometry frame.
+    points_frame: lidar_frame
+    enable_fused: true
+  synchronization: {...}
+  fusion: {...}
+  depth: {...}
+```
+
+A Prepared Scene only needs its directory:
+
+```yaml
+input:
+  type: prepared_scene
+  scene: /path/to/prepared-scene
+```
+
+`sage prepare --config <config> --output <scene>` exports the configured input
+as a Prepared Scene. It is the only path that persists an input; training never
+writes one as a side effect. An exported scene replays the bag's canonical
+frames element for element and shares its canonical sequence identity, so a
+checkpoint trained on one can be evaluated against the other.
 
 Training runs mapping, appearance refinement, and final evaluation in order:
 
@@ -82,14 +115,27 @@ from the cache (normally the bootstrap frame). Older valid structure outputs
 without this optional cache remain resumable and fall back to online inference.
 
 Use `sage evaluate --checkpoint outputs/sage/final/appearance_checkpoint.pt`
-with the same input choice to publish a separate evaluation output. Existing
-outputs are never silently overwritten.
+with a config naming an equivalent input to publish a separate evaluation
+output. Existing outputs are never silently overwritten.
 
 ## Experiment identity
 
-YAML fields are strict. The configuration SHA-256, input identities, model
-hashes, renderer identity, source-state hash, and `worktree_dirty` flag are
-recorded with each run. A dirty checkout is allowed by default; set
+YAML fields are strict. Each run records three input identities plus a training
+identity:
+
+- `canonical_sequence_identity` — the ordered frames SAGE actually consumed
+  (timestamps, image, K, pose, every observation array).
+- `canonical_contract_identity` — the frame semantics they were consumed under.
+- `adapter_provenance_identity` and `source_identity` — how and from what bytes
+  they were produced; recorded for audit, never a compatibility gate.
+- `training_config_identity` — the configuration minus its input section.
+
+Checkpoint reuse is bound to the canonical and training identities, which is
+what lets a ROSBAG run and its exported Prepared Scene exchange checkpoints
+while a different frame selection is rejected. The resolved contract and the
+preflight report are written next to each run's artifacts. The configuration
+SHA-256, model hashes, renderer identity, source-state hash, and
+`worktree_dirty` flag are recorded as well. A dirty checkout is allowed by default; set
 `runtime.require_clean_worktree: true` to reject it during preflight and
 mapping. Changing the configuration while a run is active is always rejected.
 

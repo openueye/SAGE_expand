@@ -1,4 +1,9 @@
-"""Capture and re-validation of a mapping run's input identity."""
+"""Everything a mapping run must be able to prove about its inputs.
+
+Input identity comes from the resolved adapter, not from paths: the canonical
+sequence and contract identities decide checkpoint compatibility, while source
+and adapter provenance are recorded for audit only.
+"""
 
 from __future__ import annotations
 
@@ -7,15 +12,12 @@ from dataclasses import dataclass
 from pathlib import Path
 import subprocess
 
-from ..data.frame_source import FrameSource, frame_source_for_config
-from ..data.scene import PreparedScene, scene_content_sha256, sha256_file
-from ..foundation.config import ALL_ACCEPTED_FRAME_LIMIT, SageConfig
-from ..foundation.identity_schema import (
-    DependencyIdentity,
-    _canonical_identity_sha256,
-    normalize_dataset_identity,
-)
+from ..foundation.config import SageConfig
+from ..foundation.hashing import sha256_file
+from ..foundation.identity_schema import DependencyIdentity
 from ..foundation.source_policy import SOURCE_POLICY_VERSION
+from ..input.adapter import ResolvedInput
+from ..input.identity import InputIdentities
 
 
 def _producer_code_identity() -> tuple[str, bool]:
@@ -44,85 +46,42 @@ def _environment_lock_identity() -> dict[str, str]:
     return {name: sha256_file(path) for name, path in locks.items()}
 
 
-def _stream_input_hashes(config: SageConfig) -> dict[str, str]:
-    scene = config.scene
-    if scene.rosbag_dir is None or scene.calibration_path is None:
-        raise ValueError("Streaming scene is missing bag or calibration path")
-    files = {
-        "metadata.yaml": scene.rosbag_dir / "metadata.yaml",
-        **{f"rosbag/{path.name}": path for path in sorted(scene.rosbag_dir.glob("*.db3"))},
-        "cam_in_ex.txt": scene.calibration_path,
-    }
-    return {label: sha256_file(path) for label, path in sorted(files.items())}
-
-
 @dataclass(frozen=True)
 class RunInputIdentity:
     config_sha256: str
-    prepared_manifest_sha256: str
-    source_manifest_sha256: str
-    transform_contract_sha256: str
-    scene_content_sha256: str
-    source_mode: str
+    training_config_identity: str
+    input_identities: InputIdentities
+    input_contract: dict[str, object]
+    preflight_report: dict[str, object]
     source_policy_version: str
     producer_code_commit: str
     producer_code_worktree_dirty: bool
     environment_locks: dict[str, str]
     dependencies: DependencyIdentity
-    frame_source_identity: dict[str, object]
 
     @classmethod
     def capture(
-        cls, config: SageConfig, *, dependencies: DependencyIdentity,
-        require_clean: bool = False, frame_source: FrameSource | None = None,
+        cls,
+        config: SageConfig,
+        *,
+        dependencies: DependencyIdentity,
+        resolved: ResolvedInput,
+        require_clean: bool = False,
     ) -> "RunInputIdentity":
-        scene = PreparedScene(config.scene) if config.scene.input_adapter == "prepared-scene" else None
-        owns_source = frame_source is None
-        source_adapter = frame_source or frame_source_for_config(
-            config.scene, frame_limit=ALL_ACCEPTED_FRAME_LIMIT,
-        )
-        try:
-            frame_source_identity = source_adapter.start_identity()
-        finally:
-            if owns_source:
-                source_adapter.abort("identity capture does not consume frames")
-        prepared = scene._validate_contract() if config.scene.input_adapter == "prepared-scene" else None
         commit, dirty = _producer_code_identity()
         if require_clean and dirty:
             raise ValueError("SAGE producer worktree must be clean before mapping")
-        normalized_identity = normalize_dataset_identity(frame_source_identity)
-        if prepared is not None:
-            source = prepared["source"]
-            assert isinstance(source, dict)
-            source_manifest_sha256 = sha256_file(scene.prepared_manifest_path)
-            transform_sha256 = str(normalized_identity["transform_contract_sha256"])
-            source_mode = str(source["mode"])
-            source_policy_version = SOURCE_POLICY_VERSION
-        else:
-            source_manifest_sha256 = _canonical_identity_sha256(
-                frame_source_identity["input_files_sha256"]
-            )
-            prepared_manifest_sha256 = str(normalized_identity["prepared_manifest_sha256"])
-            transform_sha256 = str(normalized_identity["transform_contract_sha256"])
-            source_mode = str(normalized_identity["source_mode"])
-            source_policy_version = str(normalized_identity["source_policy_version"])
         return cls(
             config_sha256=sha256_file(config.config_path),
-            prepared_manifest_sha256=prepared_manifest_sha256 if prepared is None else sha256_file(scene.prepared_manifest_path),
-            source_manifest_sha256=source_manifest_sha256,
-            transform_contract_sha256=transform_sha256,
-            scene_content_sha256=(
-                str(normalized_identity["content_sha256"])
-                if prepared is None
-                else scene_content_sha256(scene.input_files(limit=ALL_ACCEPTED_FRAME_LIMIT))
-            ),
-            source_mode=source_mode,
-            source_policy_version=source_policy_version,
+            training_config_identity=config.training_config_identity(),
+            input_identities=resolved.identities,
+            input_contract=resolved.contract.payload(),
+            preflight_report=resolved.report.payload(),
+            source_policy_version=SOURCE_POLICY_VERSION,
             producer_code_commit=commit,
             producer_code_worktree_dirty=dirty,
             environment_locks=_environment_lock_identity(),
             dependencies=dependencies,
-            frame_source_identity=frame_source_identity,
         )
 
     def validate_unchanged(self, config: SageConfig) -> None:
@@ -134,26 +93,6 @@ class RunInputIdentity:
                 raise ValueError("SAGE producer code identity changed")
             if _environment_lock_identity() != self.environment_locks:
                 raise ValueError("SAGE environment lock identity changed")
-            if config.scene.input_adapter == "prepared-scene":
-                scene = PreparedScene(config.scene)
-                manifest = scene._validate_contract()
-                current_manifest_hash = sha256_file(scene.prepared_manifest_path)
-                current_content_hash = scene_content_sha256(
-                    scene.input_files(limit=ALL_ACCEPTED_FRAME_LIMIT)
-                )
-                if current_manifest_hash != self.prepared_manifest_sha256 or current_content_hash != self.scene_content_sha256:
-                    raise ValueError("Prepared Scene content changed")
-                if str(manifest["source"]["mode"]) != self.source_mode:
-                    raise ValueError("Prepared Scene source mode changed")
-            else:
-                identity = self.frame_source_identity
-                if _stream_input_hashes(config) != identity.get("input_files_sha256"):
-                    raise ValueError("Streaming input files changed")
-                if identity.get("preparation_profile") != config.scene.preparation_profile:
-                    raise ValueError("Streaming preparation profile changed")
-                source = identity.get("source")
-                if not isinstance(source, dict) or source.get("mode") != config.scene.source_mode:
-                    raise ValueError("Streaming source mode changed")
         except ValueError as exc:
             raise ValueError("Run inputs changed during mapping") from exc
 
@@ -166,15 +105,13 @@ class RunInputIdentity:
     def identity_snapshot(self) -> dict[str, object]:
         return {
             "config_sha256": self.config_sha256,
-            "prepared_manifest_sha256": self.prepared_manifest_sha256,
-            "transform_contract_sha256": self.transform_contract_sha256,
-            "scene_content_sha256": self.scene_content_sha256,
-            "source_mode": self.source_mode,
+            "training_config_identity": self.training_config_identity,
+            "input": self.input_identities.payload(),
+            "input_contract": deepcopy(self.input_contract),
             "source_policy_version": self.source_policy_version,
             "producer_code": self.producer_code_payload(),
             "environment_locks": dict(self.environment_locks),
             "dependencies": self.dependencies.payload(),
-            "frame_source": deepcopy(self.frame_source_identity),
         }
 
 

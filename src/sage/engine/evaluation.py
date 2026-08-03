@@ -9,7 +9,8 @@ from typing import Any, Callable, Iterable
 import torch
 
 from ..foundation.config import ALPHA_NORMALIZED_DEPTH_POLICY, RAW_ACCUMULATED_DEPTH_POLICY
-from ..foundation.contracts import FrameInputs, MappingObservation, SourceType
+from ..foundation.contracts import MappingObservation, SourceType
+from ..core_input import MappingFrame
 from .losses import alpha_normalized_depth
 from .rendering import RenderOutput
 
@@ -26,7 +27,7 @@ class EvaluationDepthPolicy:
     epsilon: float = 1e-6
     alpha_support_a0: float = 0.01
     hit_target_center: float = 0.5
-    hit_target_fused5: float = 0.35
+    hit_target_fused: float = 0.35
 
     def __post_init__(self) -> None:
         if self.depth_policy not in {
@@ -41,7 +42,7 @@ class EvaluationDepthPolicy:
             raise ValueError("Evaluation alpha-support threshold must be finite and within (0, 1]")
         if any(
             not torch.isfinite(torch.tensor(target)) or not 0 <= target <= 1
-            for target in (self.hit_target_center, self.hit_target_fused5)
+            for target in (self.hit_target_center, self.hit_target_fused)
         ):
             raise ValueError("Evaluation hit targets must be finite and within [0, 1]")
 
@@ -53,7 +54,7 @@ def _source_masks(target_mapping: MappingObservation, device: torch.device) -> d
     source_types = torch.as_tensor(target_mapping.source_types, dtype=torch.uint8, device=device)
     return {
         "center": source_types == int(SourceType.LIDAR_CENTER),
-        "fused5": source_types == int(SourceType.LIDAR_FUSED),
+        "fused": source_types == int(SourceType.LIDAR_FUSED),
     }
 
 
@@ -231,7 +232,7 @@ def evaluate_render_output(
     else:
         depth = output.accumulated_depth
     masks = _source_masks(target_mapping, depth.device)
-    known_source = masks["center"] | masks["fused5"]
+    known_source = masks["center"] | masks["fused"]
     observation = torch.isfinite(target_depth) & (target_depth > 0) & known_source
     depth_metrics = {
         name: _depth_summary(
@@ -257,8 +258,8 @@ def evaluate_render_output(
         "center": _hit_summary(
             output.alpha, observation & masks["center"], target=policy.hit_target_center,
         ),
-        "fused5": _hit_summary(
-            output.alpha, observation & masks["fused5"], target=policy.hit_target_fused5,
+        "fused": _hit_summary(
+            output.alpha, observation & masks["fused"], target=policy.hit_target_fused,
         ),
     }
     return _materialize_scalar_tensors({
@@ -276,7 +277,7 @@ def _sum_optional(rows: list[dict[str, Any]], name: str) -> int:
 def _aggregate_geometry(frames: list[dict[str, Any]]) -> dict[str, Any]:
     depth: dict[str, Any] = {}
     alpha: dict[str, Any] = {}
-    for source in ("center", "fused5", "total"):
+    for source in ("center", "fused", "total"):
         depth_rows = [frame["geometry"]["depth"][source] for frame in frames]
         error_sum = sum(float(row["absolute_error_sum_m"]) for row in depth_rows)
         observed = _sum_optional(depth_rows, "observation_count")
@@ -309,7 +310,7 @@ def _aggregate_geometry(frames: list[dict[str, Any]]) -> dict[str, Any]:
         }
 
     hit: dict[str, Any] = {}
-    for source in ("center", "fused5"):
+    for source in ("center", "fused"):
         rows = [frame["geometry"]["hit_margin"][source] for frame in frames]
         observed = _sum_optional(rows, "observation_count")
         finite = _sum_optional(rows, "finite_count")
@@ -327,13 +328,13 @@ def _aggregate_geometry(frames: list[dict[str, Any]]) -> dict[str, Any]:
 
 def evaluate_frames(
     model: object,
-    frames: Iterable[FrameInputs],
+    frames: Iterable[MappingFrame],
     *,
-    renderer: Callable[[object, FrameInputs], RenderOutput],
+    renderer: Callable[[object, MappingFrame], RenderOutput],
     image_metrics: Callable[[torch.Tensor, torch.Tensor], object],
     policy: EvaluationDepthPolicy,
     map_every: int,
-    progress_callback: Callable[[int, FrameInputs], None] | None = None,
+    progress_callback: Callable[[int, MappingFrame], None] | None = None,
 ) -> dict[str, Any]:
     """Run the frozen image and geometry protocol over an ordered frame stream."""
     if type(map_every) is not int or map_every < 1:

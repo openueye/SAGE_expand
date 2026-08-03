@@ -1,6 +1,6 @@
 """Minimal ROS2-CDR encoders + a matching rosbag2 SQLite (.db3) writer.
 
-Mirrors the byte layouts that ``sage.data.rosbag.decoder`` already knows how to
+Mirrors the byte layouts that ``sage.input.rosbag.decoder`` already knows how to
 parse (see ``parse_header``/``parse_compressed_image``/``parse_odometry``/
 ``parse_pointcloud2``), just in the write direction. Only the fields the
 decoder actually reads are encoded -- trailing message fields the adapter
@@ -111,7 +111,7 @@ def encode_odometry(
 def encode_pointcloud2_xyzrgb(
     *, stamp_sec: int, stamp_nsec: int, frame_id: str, xyz: np.ndarray, rgb: np.ndarray,
 ) -> bytes:
-    """x,y,z float32 + packed-float32 rgb, point_step=16 -- matches EXPECTED_POINT_LAYOUTS['LIDAR_WORLD']."""
+    """x,y,z float32 + packed-float32 rgb, point_step=16."""
     n = len(xyz)
     writer = CdrWriter()
     encode_header(writer, stamp_sec=stamp_sec, stamp_nsec=stamp_nsec, frame_id=frame_id)

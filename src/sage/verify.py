@@ -44,21 +44,13 @@ def _verify_conda_prefix() -> None:
 
 
 def execution_preflight(config: object, *, device: str = "cuda") -> dict[str, object]:
+    from .core_input import CoreObservationAssembler
     from .data.providers.spnet import OnlineSPNetProvider
     from .engine.model import TrainableGaussians
     from .engine.rendering import render
     from .foundation.config import SageConfig
-    from .foundation.contracts import (
-        CameraIntrinsics,
-        DepthEvidence,
-        FrameInputs,
-        GrowthInputs,
-        InputSourceFamily,
-        INVALID_SOURCE_TYPE,
-        MappingObservation,
-        Pose,
-        SourceType,
-    )
+    from .foundation.contracts import SourceType
+    from .input.frame import DepthObservation, FrameInputs, FrameMetadata
 
     if not isinstance(config, SageConfig):
         raise ValueError("Execution preflight requires the frozen SAGE configuration")
@@ -67,26 +59,19 @@ def execution_preflight(config: object, *, device: str = "cuda") -> dict[str, ob
     height = width = 32
     depth = np.zeros((height, width), dtype=np.float32)
     valid = depth > 0
-    source_types = np.full((height, width), INVALID_SOURCE_TYPE, dtype=np.uint8)
-    confidence = valid.astype(np.float32)
-    frame = FrameInputs(
-        index=0,
-        stem="sage-preflight",
+    frame = CoreObservationAssembler(("LIDAR_CENTER",)).assemble(FrameInputs(
+        frame_index=0,
         timestamp_ns=0,
-        intrinsics=CameraIntrinsics(width, height, 32.0, 32.0, width / 2, height / 2),
-        pose=Pose(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0),
-        rgb=np.zeros((height, width, 3), dtype=np.float32),
-        mapping=MappingObservation(
-            depth, source_types, confidence, InputSourceFamily.LIDAR_WORLD,
+        image_rgb=np.zeros((height, width, 3), dtype=np.float32),
+        intrinsics=np.asarray(
+            [[32.0, 0.0, width / 2], [0.0, 32.0, height / 2], [0.0, 0.0, 1.0]],
+            dtype=np.float64,
         ),
-        growth=GrowthInputs((DepthEvidence(
-            SourceType.LIDAR_CENTER,
-            depth,
-            valid,
-            confidence,
-            InputSourceFamily.LIDAR_WORLD,
-        ),)),
-    )
+        reference_from_camera=np.eye(4, dtype=np.float64),
+        lidar_center=DepthObservation(depth, valid),
+        lidar_fused=None,
+        metadata=FrameMetadata({}, {}, {}),
+    ))
     target = torch.device(device)
     model = TrainableGaussians(
         torch.tensor([[0.0, 0.0, 1.0]], device=target),

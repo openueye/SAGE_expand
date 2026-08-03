@@ -8,7 +8,8 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from ...foundation.contracts import DepthEvidence, FrameInputs, SourceType
+from ...foundation.contracts import DepthEvidence, SourceType
+from ...core_input import MappingFrame
 from .spnet import (
     DenseSPNetProvider,
     SPNetFrameGrid,
@@ -138,7 +139,7 @@ class ReusingDenseSPNetProvider:
     def identity(self) -> SPNetIdentity:
         return self._identity
 
-    def dense_evidence_for(self, frame: FrameInputs) -> DepthEvidence:
+    def dense_evidence_for(self, frame: MappingFrame) -> DepthEvidence:
         cached = self._frames.get(frame.index)
         if cached is None:
             evidence = self._fallback.dense_evidence_for(frame)
@@ -153,13 +154,12 @@ class ReusingDenseSPNetProvider:
                 cached.depth_m,
                 valid,
                 np.where(valid, confidence, 0.0).astype(np.float32),
-                frame.mapping.input_source_family,
             )
             self.reused_frames += 1
         self._record_frame(frame)
         return evidence
 
-    def _record_frame(self, frame: FrameInputs) -> None:
+    def _record_frame(self, frame: MappingFrame) -> None:
         records = self._identity.frame_grids
         if records and frame.index <= records[-1].frame_index:
             raise ValueError("Dense SPNet frames must be consumed in increasing order")

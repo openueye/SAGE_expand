@@ -11,15 +11,14 @@ from sage.foundation.config import (
     PruningConfig,
 )
 from sage.foundation.contracts import (
-    CameraIntrinsics,
     DepthEvidence,
-    FrameInputs,
     GrowthInputs,
-    InputSourceFamily,
     MappingObservation,
-    Pose,
     SourceType,
 )
+from sage.core_input import MappingFrame
+
+from helpers import intrinsics_matrix, mapping_frame, pose_matrix
 from sage.mapping.mapper import MappingEngine
 
 
@@ -29,7 +28,7 @@ class _Provider:
     def __init__(self) -> None:
         self.calls = 0
 
-    def evidence_for(self, frame: FrameInputs) -> DepthEvidence:
+    def evidence_for(self, frame: MappingFrame) -> DepthEvidence:
         self.calls += 1
         depth = np.zeros(frame.rgb.shape[:2], dtype=np.float32)
         depth[0, 1] = 1.0
@@ -39,7 +38,6 @@ class _Provider:
             depth,
             valid,
             valid.astype(np.float32),
-            frame.mapping.input_source_family,
         )
 
 
@@ -47,7 +45,7 @@ class _GradientRenderer:
     def __init__(self) -> None:
         self.calls = 0
 
-    def __call__(self, model, frame: FrameInputs) -> RenderOutput:
+    def __call__(self, model, frame: MappingFrame) -> RenderOutput:
         self.calls += 1
         shape = (frame.intrinsics.height, frame.intrinsics.width)
         rgb = (model.colors.mean(dim=0) + 0.1).reshape(1, 1, 3).expand(*shape, 3)
@@ -56,31 +54,22 @@ class _GradientRenderer:
         return RenderOutput(rgb, depth, alpha)
 
 
-def _frame(index: int, translation_x: float) -> FrameInputs:
+def _frame(index: int, translation_x: float) -> MappingFrame:
     height, width = 1, 2
-    intrinsics = CameraIntrinsics(width, height, 2.0, 2.0, 0.5, 0.0)
     depth = np.zeros((height, width), dtype=np.float32)
     depth[0, 0] = 1.0
     valid = depth > 0
     source_types = np.full((height, width), 255, dtype=np.uint8)
     source_types[valid] = int(SourceType.LIDAR_CENTER)
     confidence = valid.astype(np.float32)
-    family = InputSourceFamily.LIDAR_WORLD
-    center = DepthEvidence(
-        SourceType.LIDAR_CENTER,
-        depth,
-        valid,
-        confidence,
-        family,
-    )
-    return FrameInputs(
-        index=index,
-        stem=f"mapping-{index}",
+    center = DepthEvidence(SourceType.LIDAR_CENTER, depth, valid, confidence)
+    return mapping_frame(
+        frame_index=index,
         timestamp_ns=index,
-        intrinsics=intrinsics,
-        pose=Pose(translation_x, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0),
         rgb=np.full((height, width, 3), 0.2, dtype=np.float32),
-        mapping=MappingObservation(depth, source_types, confidence, family),
+        intrinsics=intrinsics_matrix(2.0, 2.0, 0.5, 0.0),
+        reference_from_camera=pose_matrix((translation_x, 0.0, 0.0)),
+        mapping=MappingObservation(depth, source_types, confidence),
         growth=GrowthInputs((center,)),
     )
 

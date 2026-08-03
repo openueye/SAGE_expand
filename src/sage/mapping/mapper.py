@@ -21,14 +21,15 @@ from ..engine.losses import mapping_loss, mapping_training_loss
 from ..engine.model import TrainableGaussians
 from ..engine.rendering import RenderOutput, Renderer
 from ..foundation.config import (
-    ODIN_GLOBAL_CURRENT_ANCHORED_VARIANT,
+    GLOBAL_CURRENT_ANCHORED_VARIANT,
     GaussianInitializationConfig,
     GrowthConfig,
     MappingConfig,
     MappingLossConfig,
     PruningConfig,
 )
-from ..foundation.contracts import DepthEvidence, FrameInputs, SourceType
+from ..foundation.contracts import DepthEvidence, SourceType
+from ..core_input import MappingFrame
 from ..foundation.source_policy import SOURCE_DESCRIPTORS, descriptor_for_type, descriptors_for_types, opacity_keep_mask, source_counts
 
 
@@ -60,7 +61,7 @@ def expected_spnet_invocations(
 
 def mapping_spnet_evidence(
     provider: SPNetEvidenceProvider,
-    frame: FrameInputs,
+    frame: MappingFrame,
 ) -> tuple[DepthEvidence | None, DenseSPNetFrame | None]:
     """Use bundled dense evidence when supported, preserving legacy providers."""
     bundle_for = getattr(provider, "evidence_bundle_for", None)
@@ -147,7 +148,7 @@ class MappingRun:
     spnet_expected_invocations: int = 0
     spnet_actual_invocations: int = 0
     spnet_inference_seconds: tuple[float, ...] = ()
-    optimization_variant: str = ODIN_GLOBAL_CURRENT_ANCHORED_VARIANT
+    optimization_variant: str = GLOBAL_CURRENT_ANCHORED_VARIANT
     optimizer_lifecycle: str = "persistent"
     optimizer_final_step: int | None = None
     optimizer_append_migrations: int = 0
@@ -195,13 +196,13 @@ class MappingEngine:
             growth, device=self.device, gaussian_initialization=gaussian_initialization
         )
 
-    def _render(self, model: TrainableGaussians, frame: FrameInputs) -> RenderOutput:
+    def _render(self, model: TrainableGaussians, frame: MappingFrame) -> RenderOutput:
         """Render once at the raw seam shared by growth, loss, and evaluation."""
         return self.renderer(model, frame)
 
     def _targets(
         self,
-        frame: FrameInputs,
+        frame: MappingFrame,
         cache: dict[int, _CachedFrameTargets],
     ) -> _CachedFrameTargets:
         """Return GPU-resident loss targets cached for the run's lifetime.
@@ -230,7 +231,7 @@ class MappingEngine:
                     "center": (
                         source_types == int(SourceType.LIDAR_CENTER)
                     ),
-                    "fused5": (
+                    "fused": (
                         source_types == int(SourceType.LIDAR_FUSED)
                     ),
                 },
@@ -249,16 +250,13 @@ class MappingEngine:
             raise RuntimeError("Optimizer step state is inconsistent")
         return steps.pop()
 
-    def run(self, frames: Iterable[FrameInputs]) -> MappingRun:
+    def run(self, frames: Iterable[MappingFrame]) -> MappingRun:
         run_started = perf_counter()
         frame_iterator = iter(frames)
         try:
             first_frame = next(frame_iterator)
         except StopIteration as exc:
             raise ValueError("Mapping requires at least one frame") from exc
-        run_source_family = first_frame.mapping.source_family
-        if run_source_family is None:
-            raise ValueError("Mapping requires a declared LiDAR source family")
         model = TrainableGaussians.from_frame(
             first_frame,
             device=self.device,
@@ -270,7 +268,7 @@ class MappingEngine:
         optimizer_append_migrations = 0
         optimizer_prune_migrations = 0
         keyframes: list[int] = []
-        keyframe_by_index: dict[int, FrameInputs] = {}
+        keyframe_by_index: dict[int, MappingFrame] = {}
         target_cache: dict[int, _CachedFrameTargets] = {}
         commits: list[MappingCommit] = []
         actual_spnet_invocations = 0
@@ -280,8 +278,6 @@ class MappingEngine:
         processed_frames = 0
         commit_ordinal_by_frame_index: dict[int, int] = {}
         for frame in chain((first_frame,), frame_iterator):
-            if frame.mapping.source_family != run_source_family:
-                raise ValueError("Mapping run cannot switch raw/SLAM LiDAR source families")
             processed_frames += 1
             should_map = is_mapping_frame(frame.index, map_every=self.config.map_every)
             if should_map:
@@ -516,26 +512,26 @@ class MappingEngine:
                         "loss": {
                             "photo": float(final_terms["photo"].detach()),
                             "geo_center": float(final_terms["geo_center"].detach()),
-                            "geo_fused5": float(final_terms["geo_fused5"].detach()),
+                            "geo_fused": float(final_terms["geo_fused"].detach()),
                             "hit_center": float(final_terms["hit_center"].detach()),
-                            "hit_fused5": float(final_terms["hit_fused5"].detach()),
+                            "hit_fused": float(final_terms["hit_fused"].detach()),
                             "depth_coverage": float(final_terms["depth_coverage"].detach()),
                             "total": final_loss,
                         },
                         "depth": {
                             "valid_pixels": int(final_terms["depth_valid_pixels"].detach()),
                             "valid_center_pixels": int(final_terms["depth_valid_center_pixels"].detach()),
-                            "valid_fused5_pixels": int(final_terms["depth_valid_fused5_pixels"].detach()),
+                            "valid_fused_pixels": int(final_terms["depth_valid_fused_pixels"].detach()),
                             "center_mae": float(final_terms["depth_center_mae"].detach()),
-                            "fused5_mae": float(final_terms["depth_fused5_mae"].detach()),
+                            "fused_mae": float(final_terms["depth_fused_mae"].detach()),
                         },
                         "alpha": {
                             "center_mean": float(final_terms["alpha_center_mean"].detach()),
                             "center_p10": float(final_terms["alpha_center_p10"].detach()),
                             "center_p50": float(final_terms["alpha_center_p50"].detach()),
-                            "fused5_mean": float(final_terms["alpha_fused5_mean"].detach()),
-                            "fused5_p10": float(final_terms["alpha_fused5_p10"].detach()),
-                            "fused5_p50": float(final_terms["alpha_fused5_p50"].detach()),
+                            "fused_mean": float(final_terms["alpha_fused_mean"].detach()),
+                            "fused_p10": float(final_terms["alpha_fused_p10"].detach()),
+                            "fused_p50": float(final_terms["alpha_fused_p50"].detach()),
                             "below_a0_fraction": float(final_terms["alpha_below_a0_fraction"].detach()),
                         },
                     },
