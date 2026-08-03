@@ -16,7 +16,7 @@ from .source_policy import (
 
 
 SCHEMA_VERSION = "sage-gs-v1"
-ODIN_GLOBAL_CURRENT_ANCHORED_VARIANT = "odin-global-current-anchored-v1"
+GLOBAL_CURRENT_ANCHORED_VARIANT = "global-current-anchored-v1"
 NATIVE_FULL_FRAME_PAD_CROP_V1 = "native-full-frame-pad-crop-v1"
 RAW_ACCUMULATED_DEPTH_POLICY = "raw-accumulated-v1"
 ALPHA_NORMALIZED_DEPTH_POLICY = "alpha-normalized-v1"
@@ -319,7 +319,7 @@ class MappingConfig:
     prune_every: int = 20
     prune_stop_after: int = 20
     learning_rates: dict[str, float] | None = None
-    optimization_variant: str = ODIN_GLOBAL_CURRENT_ANCHORED_VARIANT
+    optimization_variant: str = GLOBAL_CURRENT_ANCHORED_VARIANT
     evaluation_depth_policy: str = ALPHA_NORMALIZED_DEPTH_POLICY
     evaluation_min_alpha: float = 0.01
     evaluation_epsilon: float = 1e-6
@@ -348,9 +348,9 @@ class MappingConfig:
         if not math.isfinite(epsilon) or epsilon <= 0:
             raise ValueError("evaluation_epsilon must be finite and positive")
         object.__setattr__(self, "evaluation_epsilon", epsilon)
-        if self.optimization_variant != ODIN_GLOBAL_CURRENT_ANCHORED_VARIANT:
+        if self.optimization_variant != GLOBAL_CURRENT_ANCHORED_VARIANT:
             raise ValueError(
-                f"SAGE-GS v1 requires optimization_variant={ODIN_GLOBAL_CURRENT_ANCHORED_VARIANT}"
+                f"SAGE-GS v1 requires optimization_variant={GLOBAL_CURRENT_ANCHORED_VARIANT}"
             )
         if any(value < 1 for value in (self.map_every, self.keyframe_every, self.iterations)):
             raise ValueError("Mapping intervals and iterations must be positive")

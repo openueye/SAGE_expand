@@ -120,6 +120,9 @@ class GenericRosbagAdapter:
         center_coverage: list[float] = []
         fused_coverage: list[float] = []
         step = max(1, len(plan.accepted) // _PROJECTION_SAMPLE)
+        # Frame 0 is always sampled: mapping initializes the model from it, so
+        # an accepted sequence whose first frame has no depth is a preflight
+        # failure rather than a surprise at the first commit.
         for position in range(0, len(plan.accepted), step)[:_PROJECTION_SAMPLE]:
             observations = build_observations(
                 reader, self._spec, calibration, plan.accepted[position],
@@ -147,6 +150,11 @@ class GenericRosbagAdapter:
             )
         if statistics_module.median(center_coverage) <= 0:
             report.add_error("Sampled LIDAR_CENTER depth coverage is zero")
+        if center_coverage[0] <= 0:
+            report.add_error(
+                "The first accepted frame carries no LIDAR_CENTER depth; mapping "
+                "initialization has no reproducible starting frame"
+            )
 
     # -- contract and identity ---------------------------------------------
 

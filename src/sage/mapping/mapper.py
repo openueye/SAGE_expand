@@ -21,7 +21,7 @@ from ..engine.losses import mapping_loss, mapping_training_loss
 from ..engine.model import TrainableGaussians
 from ..engine.rendering import RenderOutput, Renderer
 from ..foundation.config import (
-    ODIN_GLOBAL_CURRENT_ANCHORED_VARIANT,
+    GLOBAL_CURRENT_ANCHORED_VARIANT,
     GaussianInitializationConfig,
     GrowthConfig,
     MappingConfig,
@@ -148,7 +148,7 @@ class MappingRun:
     spnet_expected_invocations: int = 0
     spnet_actual_invocations: int = 0
     spnet_inference_seconds: tuple[float, ...] = ()
-    optimization_variant: str = ODIN_GLOBAL_CURRENT_ANCHORED_VARIANT
+    optimization_variant: str = GLOBAL_CURRENT_ANCHORED_VARIANT
     optimizer_lifecycle: str = "persistent"
     optimizer_final_step: int | None = None
     optimizer_append_migrations: int = 0
