@@ -122,12 +122,12 @@ def _final_output_is_resumable(
     try:
         payload = load_checkpoint(checkpoint)
         refinement = payload.get("appearance_refinement")
-        config_sha256 = sha256_file(config.config_path)
+        training_identity = config.training_config_identity()
         if (
             payload.get("checkpoint_version")
             != APPEARANCE_REFINEMENT_CHECKPOINT_VERSION
             or not isinstance(refinement, dict)
-            or refinement.get("refinement_config_sha256") != config_sha256
+            or refinement.get("refinement_config_sha256") != training_identity
             or refinement.get("source_checkpoint_sha256")
             != sha256_file(source_checkpoint)
         ):

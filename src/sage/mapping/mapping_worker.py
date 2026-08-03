@@ -57,14 +57,9 @@ def _report_frames(
             or (expected_total > 0 and completed == expected_total)
         ):
             elapsed = perf_counter() - mapping_started_at
-            rosbag_frame: str = (
-                f"{int(frame.stem):06d}"
-                if frame.stem.isdigit()
-                else frame.stem
-            )
             print(
                 f"[{_format_elapsed(elapsed)}] SAGE mapping frame {completed}; "
-                f"rosbag frame {rosbag_frame}",
+                f"canonical frame {frame.stem}",
                 flush=True,
             )
         yield frame

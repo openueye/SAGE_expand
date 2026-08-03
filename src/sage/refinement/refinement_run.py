@@ -449,15 +449,18 @@ def run_appearance_refinement(
     destination = Path(output).resolve()
     source_checkpoint = Path(checkpoint).resolve()
     base_config_sha256 = sha256_file(config.config_path)
-    refinement_sha256 = base_config_sha256
+    # The training identity, not the config file: a run must stay reusable when
+    # only the input section differs between two equivalent canonical paths.
+    training_identity = config.training_config_identity()
+    refinement_sha256 = training_identity
     if destination.exists():
         raise ValueError(
             f"Refusing an existing appearance output path: {destination}"
         )
     source_payload = load_checkpoint(source_checkpoint)
     if (
-        source_payload["identity_snapshot"]["config_sha256"]
-        != base_config_sha256
+        source_payload["identity_snapshot"]["training_config_identity"]
+        != training_identity
     ):
         raise ValueError(
             "Source checkpoint configuration does not match "
@@ -595,7 +598,7 @@ def run_appearance_refinement(
                 ),
                 "source_masks": {
                     "center": source_types == int(SourceType.LIDAR_CENTER),
-                    "fused5": source_types == int(SourceType.LIDAR_FUSED),
+                    "fused": source_types == int(SourceType.LIDAR_FUSED),
                 },
                 "dense_normal_static": prepare_dense_normal_static(
                     dense_priors[frame.index],

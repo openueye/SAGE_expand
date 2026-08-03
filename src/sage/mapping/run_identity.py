@@ -49,6 +49,7 @@ def _environment_lock_identity() -> dict[str, str]:
 @dataclass(frozen=True)
 class RunInputIdentity:
     config_sha256: str
+    training_config_identity: str
     input_identities: InputIdentities
     input_contract: dict[str, object]
     preflight_report: dict[str, object]
@@ -72,6 +73,7 @@ class RunInputIdentity:
             raise ValueError("SAGE producer worktree must be clean before mapping")
         return cls(
             config_sha256=sha256_file(config.config_path),
+            training_config_identity=config.training_config_identity(),
             input_identities=resolved.identities,
             input_contract=resolved.contract.payload(),
             preflight_report=resolved.report.payload(),
@@ -103,6 +105,7 @@ class RunInputIdentity:
     def identity_snapshot(self) -> dict[str, object]:
         return {
             "config_sha256": self.config_sha256,
+            "training_config_identity": self.training_config_identity,
             "input": self.input_identities.payload(),
             "input_contract": deepcopy(self.input_contract),
             "source_policy_version": self.source_policy_version,

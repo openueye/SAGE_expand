@@ -55,13 +55,14 @@ def run_evaluation(
     ):
         raise ValueError("SAGE evaluation requires the final checkpoint")
     config_sha256 = sha256_file(config.config_path)
+    training_identity = config.training_config_identity()
     identity = checkpoint_payload.get("identity_snapshot")
     refinement = checkpoint_payload.get("appearance_refinement")
     if (
         not isinstance(identity, dict)
-        or identity.get("config_sha256") != config_sha256
+        or identity.get("training_config_identity") != training_identity
         or not isinstance(refinement, dict)
-        or refinement.get("refinement_config_sha256") != config_sha256
+        or refinement.get("refinement_config_sha256") != training_identity
     ):
         raise ValueError(
             "Final checkpoint and SAGE configuration do not match"
@@ -85,7 +86,7 @@ def run_evaluation(
             epsilon=config.mapping.evaluation_epsilon,
             alpha_support_a0=config.mapping.evaluation_alpha_support_a0,
             hit_target_center=config.mapping.evaluation_hit_target_center,
-            hit_target_fused5=config.mapping.evaluation_hit_target_fused5,
+            hit_target_fused=config.mapping.evaluation_hit_target_fused,
         )
         resolved = config.input.create_adapter().preflight()
         print("\n".join(resolved.summary_lines()), flush=True)

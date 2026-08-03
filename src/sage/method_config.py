@@ -332,7 +332,7 @@ class SageMethodConfig:
                 evaluation_epsilon=evaluation["epsilon"],
                 evaluation_alpha_support_a0=evaluation["alpha_support"],
                 evaluation_hit_target_center=evaluation["hit_target_center"],
-                evaluation_hit_target_fused5=evaluation["hit_target_fused"],
+                evaluation_hit_target_fused=evaluation["hit_target_fused"],
             ),
             gaussian_initialization=GaussianInitializationConfig(
                 opacity=self.mapping["initial_opacity"],

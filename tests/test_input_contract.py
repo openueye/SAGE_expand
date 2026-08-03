@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -195,3 +197,53 @@ def test_core_identity_match_ignores_provenance_but_not_content() -> None:
     validate_core_identity_match(other_provenance.payload(), current)
     with pytest.raises(ValueError, match="incompatible"):
         validate_core_identity_match(_identities("c" * 64, "b" * 64).payload(), current)
+
+
+def _method_config(tmp_path, *, input_payload: dict) -> object:
+    """A minimal but complete method config differing only in its input section."""
+    import copy
+    import yaml
+
+    from sage.method_config import SageMethodConfig
+
+    base = yaml.safe_load(
+        (Path(__file__).resolve().parents[1] / "configs" / "sage.yaml").read_text(encoding="utf-8")
+    )
+    payload = copy.deepcopy(base)
+    payload["input"] = input_payload
+    path = tmp_path / f"config-{abs(hash(str(input_payload)))}.yaml"
+    path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+    return SageMethodConfig.load(path)
+
+
+def test_training_identity_ignores_the_input_section(tmp_path) -> None:
+    rosbag = _method_config(tmp_path, input_payload={
+        "type": "prepared_scene", "scene": "/tmp/scene-a",
+    })
+    scene = _method_config(tmp_path, input_payload={
+        "type": "prepared_scene", "scene": "/tmp/scene-b",
+    })
+    assert (
+        rosbag.resolve(tmp_path / "out").training_config_identity()
+        == scene.resolve(tmp_path / "out").training_config_identity()
+    )
+
+
+def test_training_identity_tracks_training_parameters(tmp_path) -> None:
+    import yaml
+
+    first = _method_config(tmp_path, input_payload={
+        "type": "prepared_scene", "scene": "/tmp/scene-a",
+    })
+    payload = yaml.safe_load(first.path.read_text(encoding="utf-8"))
+    payload["mapping"]["iterations"] += 1
+    changed_path = tmp_path / "changed.yaml"
+    changed_path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+
+    from sage.method_config import SageMethodConfig
+
+    changed = SageMethodConfig.load(changed_path)
+    assert (
+        first.resolve(tmp_path / "out").training_config_identity()
+        != changed.resolve(tmp_path / "out").training_config_identity()
+    )

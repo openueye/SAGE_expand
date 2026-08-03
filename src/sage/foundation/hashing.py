@@ -3,9 +3,9 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
-# ponytail: in-process memoization keyed by (path, mtime_ns, size). A single
-# Prepared Scene's input files get hashed 5-7 times within one stage
-# (start_identity / _validate_contract / prepare_close). Cross-stage reuse
+# ponytail: in-process memoization keyed by (path, mtime_ns, size). The same
+# config, checkpoint and manifest get hashed repeatedly within one stage
+# (identity capture, resume checks, artifact publication). Cross-stage reuse
 # would need an on-disk cache; not needed here.
 # Cost: a file rewritten with unchanged mtime_ns and size returns a stale digest.
 _DIGESTS: dict[tuple[str, int, int], str] = {}

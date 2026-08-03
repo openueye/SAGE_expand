@@ -90,26 +90,26 @@ _DIAGNOSTIC_FIELDS = {
     "loss": {
         "photo",
         "geo_center",
-        "geo_fused5",
+        "geo_fused",
         "hit_center",
-        "hit_fused5",
+        "hit_fused",
         "depth_coverage",
         "total",
     },
     "depth": {
         "valid_pixels",
         "valid_center_pixels",
-        "valid_fused5_pixels",
+        "valid_fused_pixels",
         "center_mae",
-        "fused5_mae",
+        "fused_mae",
     },
     "alpha": {
         "center_mean",
         "center_p10",
         "center_p50",
-        "fused5_mean",
-        "fused5_p10",
-        "fused5_p50",
+        "fused_mean",
+        "fused_p10",
+        "fused_p50",
         "below_a0_fraction",
     },
 }
@@ -473,6 +473,7 @@ def _validate_common_checkpoint(payload: dict[str, object]) -> None:
     snapshot = payload.get("identity_snapshot")
     snapshot_fields = {
         "config_sha256",
+        "training_config_identity",
         "input",
         "input_contract",
         "source_policy_version",

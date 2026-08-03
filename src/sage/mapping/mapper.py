@@ -231,7 +231,7 @@ class MappingEngine:
                     "center": (
                         source_types == int(SourceType.LIDAR_CENTER)
                     ),
-                    "fused5": (
+                    "fused": (
                         source_types == int(SourceType.LIDAR_FUSED)
                     ),
                 },
@@ -512,26 +512,26 @@ class MappingEngine:
                         "loss": {
                             "photo": float(final_terms["photo"].detach()),
                             "geo_center": float(final_terms["geo_center"].detach()),
-                            "geo_fused5": float(final_terms["geo_fused5"].detach()),
+                            "geo_fused": float(final_terms["geo_fused"].detach()),
                             "hit_center": float(final_terms["hit_center"].detach()),
-                            "hit_fused5": float(final_terms["hit_fused5"].detach()),
+                            "hit_fused": float(final_terms["hit_fused"].detach()),
                             "depth_coverage": float(final_terms["depth_coverage"].detach()),
                             "total": final_loss,
                         },
                         "depth": {
                             "valid_pixels": int(final_terms["depth_valid_pixels"].detach()),
                             "valid_center_pixels": int(final_terms["depth_valid_center_pixels"].detach()),
-                            "valid_fused5_pixels": int(final_terms["depth_valid_fused5_pixels"].detach()),
+                            "valid_fused_pixels": int(final_terms["depth_valid_fused_pixels"].detach()),
                             "center_mae": float(final_terms["depth_center_mae"].detach()),
-                            "fused5_mae": float(final_terms["depth_fused5_mae"].detach()),
+                            "fused_mae": float(final_terms["depth_fused_mae"].detach()),
                         },
                         "alpha": {
                             "center_mean": float(final_terms["alpha_center_mean"].detach()),
                             "center_p10": float(final_terms["alpha_center_p10"].detach()),
                             "center_p50": float(final_terms["alpha_center_p50"].detach()),
-                            "fused5_mean": float(final_terms["alpha_fused5_mean"].detach()),
-                            "fused5_p10": float(final_terms["alpha_fused5_p10"].detach()),
-                            "fused5_p50": float(final_terms["alpha_fused5_p50"].detach()),
+                            "fused_mean": float(final_terms["alpha_fused_mean"].detach()),
+                            "fused_p10": float(final_terms["alpha_fused_p10"].detach()),
+                            "fused_p50": float(final_terms["alpha_fused_p50"].detach()),
                             "below_a0_fraction": float(final_terms["alpha_below_a0_fraction"].detach()),
                         },
                     },

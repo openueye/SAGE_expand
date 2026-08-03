@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field, replace
+import hashlib
+import json
 import math
 from pathlib import Path
 from types import MappingProxyType
@@ -323,7 +325,7 @@ class MappingConfig:
     evaluation_epsilon: float = 1e-6
     evaluation_alpha_support_a0: float = 0.01
     evaluation_hit_target_center: float = 0.5
-    evaluation_hit_target_fused5: float = 0.35
+    evaluation_hit_target_fused: float = 0.35
 
     def __post_init__(self) -> None:
         if self.frame_policy != ALL_ACCEPTED_FRAME_POLICY:
@@ -336,7 +338,7 @@ class MappingConfig:
             "evaluation_min_alpha",
             "evaluation_alpha_support_a0",
             "evaluation_hit_target_center",
-            "evaluation_hit_target_fused5",
+            "evaluation_hit_target_fused",
         ):
             value = float(getattr(self, name))
             if not math.isfinite(value) or not 0 < value <= 1:
@@ -406,6 +408,22 @@ class SageConfig:
                 spnet_min_prune_age=self.pruning.spnet_min_prune_age,
                 spnet_scale_ceiling_m=self.pruning.spnet_scale_ceiling_m,
             ))
+
+    def training_config_identity(self) -> str:
+        """Digest of everything except the input.
+
+        Checkpoint reuse must survive swapping a ROSBAG for the Prepared Scene
+        exported from it, so the input section is deliberately excluded: the
+        canonical input identities cover that side separately.
+        """
+        payload = {
+            name: value for name, value in self.manifest_dict().items()
+            if name not in {"input", "run"}
+        }
+        payload["seed"] = self.seed
+        return hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+        ).hexdigest()
 
     def manifest_dict(self) -> dict[str, Any]:
         def convert(value: Any) -> Any:
