@@ -29,6 +29,7 @@ input:
   fusion:
     window: 5
     max_age_ms: 500.0
+    z_buffer: median
     conflict_threshold_m: 1.0
   depth:
     min_depth_m: 0.1

@@ -15,6 +15,7 @@ from sage.input.rosbag.decoder import (
     decode_points_xyz,
     parse_pointcloud2,
 )
+from sage.input.rosbag.fusion import select_fused_depth
 from sage.input.rosbag.projection import project_to_depth
 from sage.input.rosbag.reader import MessageLocator, OnlineRosbagReader, RosbagReader
 from sage.input.rosbag.spec import FusionSpec, SynchronizationSpec
@@ -243,6 +244,23 @@ def test_zbuffer_keeps_the_nearest_point_per_pixel(tmp_path) -> None:
         camera=camera, min_depth_m=0.1, max_depth_m=200.0,
     )
     assert depth[int(camera.cy), int(camera.cx)] == pytest.approx(3.0)
+
+
+def test_fusion_median_zbuffer_avoids_nearest_order_statistic() -> None:
+    stack = np.asarray([
+        [[10.0]],
+        [[0.0]],
+        [[8.0]],
+    ], dtype=np.float32)
+
+    np.testing.assert_allclose(
+        select_fused_depth(stack, stack > 0, z_buffer="nearest"),
+        [[8.0]],
+    )
+    np.testing.assert_allclose(
+        select_fused_depth(stack, stack > 0, z_buffer="median"),
+        [[9.0]],
+    )
 
 
 def test_fused_never_overlaps_center_and_records_support_and_age(tmp_path) -> None:
@@ -476,7 +494,7 @@ def test_rosbag_payload_uses_code_defaults_for_fixed_policies(tmp_path) -> None:
     assert spec.synchronization.pose_interpolation == "linear_slerp"
     assert spec.synchronization.allow_pose_extrapolation is False
     assert spec.fusion.policy == "centered_window"
-    assert spec.fusion.z_buffer == "nearest"
+    assert spec.fusion.z_buffer == "median"
     assert spec.fusion.current_scan_priority is True
     assert spec.fusion.warmup_policy == "drop_incomplete_window"
     assert spec.fusion.payload()["causal"] is False

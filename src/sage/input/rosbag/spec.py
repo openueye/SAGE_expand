@@ -34,6 +34,7 @@ _CONFIGURABLE_FUSION_FIELDS = frozenset({
     "max_age_ms",
     "conflict_threshold_m",
 })
+_OPTIONAL_FUSION_FIELDS = frozenset({"z_buffer"})
 
 # Only one fusion policy is implemented. It is symmetric around the anchor and
 # therefore NOT causal: frame k uses scans from k-2..k+2. The name says so, and
@@ -42,6 +43,7 @@ _CONFIGURABLE_FUSION_FIELDS = frozenset({
 # ponytail: single policy; add causal_trailing as a second builder when a
 # causal run is actually needed.
 FUSION_POLICIES = ("centered_window",)
+FUSION_Z_BUFFERS = ("nearest", "median")
 
 
 def _positive_number(value: Any, name: str) -> float:
@@ -113,7 +115,7 @@ class FusionSpec:
     policy: str = "centered_window"
     window: int = 5
     max_age_ms: float = 500.0
-    z_buffer: str = "nearest"
+    z_buffer: str = "median"
     conflict_threshold_m: float = 1.0
     current_scan_priority: bool = True
     warmup_policy: str = "drop_incomplete_window"
@@ -123,8 +125,8 @@ class FusionSpec:
             raise ValueError(f"fusion.policy must be one of {FUSION_POLICIES}")
         if type(self.window) is not int or self.window < 1 or self.window % 2 == 0:
             raise ValueError("fusion.window must be a positive odd number of scans")
-        if self.z_buffer != "nearest":
-            raise ValueError("fusion.z_buffer must be nearest")
+        if self.z_buffer not in FUSION_Z_BUFFERS:
+            raise ValueError(f"fusion.z_buffer must be one of {FUSION_Z_BUFFERS}")
         if self.warmup_policy != "drop_incomplete_window":
             raise ValueError("fusion.warmup_policy must be drop_incomplete_window")
         if self.current_scan_priority is not True:
@@ -259,11 +261,14 @@ class RosbagInputSpec:
         fusion = payload["fusion"]
         if (
             not isinstance(fusion, Mapping)
-            or frozenset(fusion) != _CONFIGURABLE_FUSION_FIELDS
+            or not _CONFIGURABLE_FUSION_FIELDS <= frozenset(fusion)
+            or frozenset(fusion) - _CONFIGURABLE_FUSION_FIELDS - _OPTIONAL_FUSION_FIELDS
         ):
             raise ValueError(
-                "input.fusion must define exactly: "
+                "input.fusion must define: "
                 + ", ".join(sorted(_CONFIGURABLE_FUSION_FIELDS))
+                + "; optional: "
+                + ", ".join(sorted(_OPTIONAL_FUSION_FIELDS))
             )
         return cls(
             rosbag_path=_resolve(payload["rosbag"], base_dir),
@@ -274,7 +279,12 @@ class RosbagInputSpec:
             points_frame=str(lidar["points_frame"]),
             enable_fused=bool(lidar["enable_fused"]),
             synchronization=SynchronizationSpec(**dict(synchronization)),
-            fusion=FusionSpec(**dict(fusion)),
+            fusion=FusionSpec(
+                **{
+                    **dict(fusion),
+                    "z_buffer": fusion.get("z_buffer", "median"),
+                },
+            ),
             depth=DepthSpec(**dict(payload["depth"])),
             frame_limit=payload.get("frame_limit"),
             execution=str(payload.get("execution", EXECUTION_BATCH_V1)),

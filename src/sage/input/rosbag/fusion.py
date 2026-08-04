@@ -30,6 +30,30 @@ class FrameObservations:
     statistics: dict[str, int]
 
 
+def select_fused_depth(
+    stack: np.ndarray,
+    valid: np.ndarray,
+    *,
+    z_buffer: str,
+) -> np.ndarray:
+    """Select one depth per pixel from the valid projected candidates."""
+    if z_buffer == "nearest":
+        return np.min(np.where(valid, stack, np.inf), axis=0)
+    if z_buffer == "median":
+        support = valid.sum(axis=0).astype(np.int64)
+        ordered = np.sort(np.where(valid, stack, np.nan), axis=0)
+        lower_index = np.maximum((support - 1) // 2, 0)
+        upper_index = np.maximum(support // 2, 0)
+        lower = np.take_along_axis(
+            ordered, lower_index[None, ...], axis=0,
+        )[0]
+        upper = np.take_along_axis(
+            ordered, upper_index[None, ...], axis=0,
+        )[0]
+        return np.where(support > 0, (lower + upper) / 2.0, np.nan)
+    raise ValueError(f"Unsupported fusion z-buffer: {z_buffer}")
+
+
 def _reference_points(
     reader: RosbagReader, frame: AssociatedFrame, spec: RosbagInputSpec,
 ) -> np.ndarray:
@@ -87,10 +111,13 @@ def build_observations(
     valid = stack > 0
     support = valid.sum(axis=0).astype(np.uint16)
     masked = np.where(valid, stack, np.inf)
-    nearest = np.min(masked, axis=0)
+    nearest = select_fused_depth(stack, valid, z_buffer="nearest")
     farthest = np.max(np.where(valid, stack, -np.inf), axis=0)
     conflicts = (support > 1) & ((farthest - nearest) > spec.fusion.conflict_threshold_m)
-    fused_depth = np.where(np.isfinite(nearest), nearest, 0.0).astype(np.float32)
+    fused_depth = select_fused_depth(
+        stack, valid, z_buffer=spec.fusion.z_buffer,
+    )
+    fused_depth = np.where(np.isfinite(fused_depth), fused_depth, 0.0).astype(np.float32)
     fused_depth[conflicts] = 0.0
     fused_valid = (fused_depth > 0) & ~center_valid
     fused_depth = np.where(fused_valid, fused_depth, 0.0).astype(np.float32)
@@ -111,4 +138,4 @@ def build_observations(
     return FrameObservations(center, fused, statistics)
 
 
-__all__ = ["FrameObservations", "build_observations"]
+__all__ = ["FrameObservations", "build_observations", "select_fused_depth"]
