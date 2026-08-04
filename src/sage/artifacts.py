@@ -66,8 +66,6 @@ _SOURCE_COMMIT_FIELDS = {
     "newborn_protected_by_source",
     "mature_opacity_removed",
     "mature_opacity_removed_by_source",
-    "scale_removed",
-    "scale_removed_by_source",
     "remaining_by_source",
     "spnet_available",
     "final_loss",

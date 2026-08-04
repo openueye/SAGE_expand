@@ -39,6 +39,11 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     evaluate.add_argument("--output", required=True, type=Path)
     evaluate.add_argument("--device", default="cuda")
+    evaluate.add_argument(
+        "--stage1",
+        action="store_true",
+        help="allow evaluating a stage-1 mapping checkpoint (not the final refined one)",
+    )
 
     prepare = commands.add_parser(
         "prepare",
@@ -67,6 +72,7 @@ def main(argv: list[str] | None = None) -> int:
         args.checkpoint,
         args.output,
         device=args.device,
+        allow_stage1_checkpoint=args.stage1,
     )
     print(f"SAGE evaluation complete: {output}", flush=True)
     return 0

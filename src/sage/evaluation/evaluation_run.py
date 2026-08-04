@@ -16,7 +16,10 @@ from ..engine.evaluation import EvaluationDepthPolicy, evaluate_frames
 from ..engine.metrics import ImageMetricEvaluator
 from ..engine.model import TrainableGaussians
 from ..engine.rendering import render
-from ..foundation.artifact_versions import APPEARANCE_REFINEMENT_CHECKPOINT_VERSION
+from ..foundation.artifact_versions import (
+    APPEARANCE_REFINEMENT_CHECKPOINT_VERSION,
+    CHECKPOINT_VERSION,
+)
 from ..foundation.code_identity import repository_code_identity
 from ..foundation.config import SageConfig
 from ..foundation.hashing import sha256_file
@@ -39,6 +42,7 @@ def run_evaluation(
     output: Path,
     *,
     device: str,
+    allow_stage1_checkpoint: bool = False,
 ) -> Path:
     """Evaluate every accepted frame emitted by either supported input."""
     if not str(device).startswith("cuda") or not torch.cuda.is_available():
@@ -49,24 +53,37 @@ def run_evaluation(
         raise ValueError(f"Refusing an existing evaluation path: {destination}")
 
     checkpoint_payload = load_checkpoint(source_checkpoint)
-    if (
-        checkpoint_payload["checkpoint_version"]
-        != APPEARANCE_REFINEMENT_CHECKPOINT_VERSION
-    ):
-        raise ValueError("SAGE evaluation requires the final checkpoint")
+    checkpoint_version = checkpoint_payload["checkpoint_version"]
+    is_stage1 = checkpoint_version == CHECKPOINT_VERSION
+    if checkpoint_version not in {
+        CHECKPOINT_VERSION,
+        APPEARANCE_REFINEMENT_CHECKPOINT_VERSION,
+    }:
+        raise ValueError("Unsupported SAGE checkpoint version")
+    if is_stage1 and not allow_stage1_checkpoint:
+        raise ValueError(
+            "This is a stage-1 mapping checkpoint, not the final refined "
+            "checkpoint; pass allow_stage1_checkpoint=True (CLI: --stage1) "
+            "to evaluate it anyway"
+        )
+
     config_sha256 = sha256_file(config.config_path)
     training_identity = config.training_config_identity()
     identity = checkpoint_payload.get("identity_snapshot")
-    refinement = checkpoint_payload.get("appearance_refinement")
     if (
         not isinstance(identity, dict)
         or identity.get("training_config_identity") != training_identity
-        or not isinstance(refinement, dict)
-        or refinement.get("refinement_config_sha256") != training_identity
     ):
-        raise ValueError(
-            "Final checkpoint and SAGE configuration do not match"
-        )
+        raise ValueError("Checkpoint and SAGE configuration do not match")
+    if not is_stage1:
+        refinement = checkpoint_payload.get("appearance_refinement")
+        if (
+            not isinstance(refinement, dict)
+            or refinement.get("refinement_config_sha256") != training_identity
+        ):
+            raise ValueError(
+                "Final checkpoint and SAGE configuration do not match"
+            )
 
     destination.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(
@@ -75,6 +92,12 @@ def run_evaluation(
     ))
     started = perf_counter()
     try:
+        if is_stage1:
+            print(
+                "SAGE evaluation: STAGE-1 (mapping-only) checkpoint — "
+                "results are NOT final-quality",
+                flush=True,
+            )
         model = TrainableGaussians.from_checkpoint(
             checkpoint_payload,
             device=device,
@@ -127,6 +150,7 @@ def run_evaluation(
             "checkpoint": {
                 "path": str(source_checkpoint),
                 "sha256": sha256_file(source_checkpoint),
+                "stage": "stage1_mapping" if is_stage1 else "final_refined",
             },
             "config": {
                 "path": str(config.config_path),
@@ -159,6 +183,12 @@ def run_evaluation(
             json.dumps(manifest, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
+        if is_stage1:
+            (staging / "STAGE1_CHECKPOINT_ONLY").write_text(
+                "This evaluation used a stage-1 mapping checkpoint, not the "
+                "final refined checkpoint. Results are not final-quality.\n",
+                encoding="utf-8",
+            )
         staging.rename(destination)
     except BaseException:
         shutil.rmtree(staging, ignore_errors=True)

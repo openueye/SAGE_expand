@@ -115,8 +115,6 @@ class MappingCommit:
     newborn_protected_by_source: dict[str, int]
     mature_opacity_removed: int
     mature_opacity_removed_by_source: dict[str, int]
-    scale_removed: int
-    scale_removed_by_source: dict[str, int]
     remaining_by_source: dict[str, int]
     spnet_available: bool
     final_loss: float
@@ -367,12 +365,10 @@ class MappingEngine:
                 pruned_by_reason = {"opacity_only": 0, "scale_only": 0, "opacity_and_scale": 0}
                 newborn_protected_by_source = {descriptor.name: 0 for descriptor in active_descriptors}
                 mature_opacity_removed_by_source = {descriptor.name: 0 for descriptor in active_descriptors}
-                scale_removed_by_source = {descriptor.name: 0 for descriptor in active_descriptors}
                 newborn_protected_id_chunks: list[torch.Tensor] = []
                 pruned = 0
                 newborn_protected = 0
                 mature_opacity_removed = 0
-                scale_removed = 0
                 pruning_event_executed = False
                 step_count = len(optimization_views)
                 for iteration in range(step_count):
@@ -490,8 +486,6 @@ class MappingEngine:
                     newborn_protected_by_source=newborn_protected_by_source,
                     mature_opacity_removed=mature_opacity_removed,
                     mature_opacity_removed_by_source=mature_opacity_removed_by_source,
-                    scale_removed=scale_removed,
-                    scale_removed_by_source=scale_removed_by_source,
                     remaining_by_source=source_counts(model.source_types),
                     spnet_available=spnet_available,
                     final_loss=final_loss,
