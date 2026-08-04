@@ -25,6 +25,7 @@ from ..execution import (
 )
 from ..foundation.config import SageConfig
 from ..input.prefetch import BoundedResultStream
+from ..input.frame import source_frame_label
 from ..refinement.stage2_cache import (
     Stage2InputCacheWriter,
     default_stage2_cache_path,
@@ -64,7 +65,7 @@ def _report_frames(
             elapsed = perf_counter() - mapping_started_at
             print(
                 f"[{_format_elapsed(elapsed)}] SAGE mapping frame {completed}; "
-                f"canonical frame {frame.stem}",
+                f"{source_frame_label(frame.canonical)}",
                 flush=True,
             )
         yield frame
@@ -121,7 +122,6 @@ def train(
         raise ValueError("require_clean_code must be a boolean when provided")
 
     resolved = config.input.create_adapter().preflight()
-    print("\n".join(resolved.summary_lines()), flush=True)
     assembler = CoreObservationAssembler(resolved.contract.canonical.sources)
     renderer_identity = capture_renderer_identity()
     metric_evaluator = ImageMetricEvaluator(device, model_root=config.model_root)

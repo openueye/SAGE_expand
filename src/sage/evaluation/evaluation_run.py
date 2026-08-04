@@ -178,7 +178,6 @@ def run_evaluation(
             hit_target_fused=config.mapping.evaluation_hit_target_fused,
         )
         resolved = config.input.create_adapter().preflight()
-        print("\n".join(resolved.summary_lines()), flush=True)
         assembler = CoreObservationAssembler(resolved.contract.canonical.sources)
         stream = BoundedResultStream(
             lambda: assembler.frames(resolved.frames()),
@@ -338,7 +337,6 @@ def run_evaluations(
             hit_target_fused=config.mapping.evaluation_hit_target_fused,
         )
         resolved = config.input.create_adapter().preflight()
-        print("\n".join(resolved.summary_lines()), flush=True)
         assembler = CoreObservationAssembler(resolved.contract.canonical.sources)
         stream = BoundedResultStream(
             lambda: assembler.frames(resolved.frames()),

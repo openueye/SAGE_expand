@@ -45,6 +45,7 @@ from ..foundation.contracts import DenseGeometryPrior, SourceType
 from ..core_input import MappingFrame
 from ..foundation.hashing import sha256_file
 from ..foundation.identity_schema import validate_dataset_identity
+from ..input.frame import source_frame_label
 from .appearance_config import (
     AppearanceRefinementConfig,
     refinement_config_identity,
@@ -68,6 +69,7 @@ from .stage2_cache import (
     Stage2InputCache,
     default_stage2_cache_path,
     remove_stage2_dense_prior_cache,
+    STAGE2_CACHE_SCHEMA,
 )
 
 
@@ -409,7 +411,7 @@ def _consume_mapping_frames(
             "accepted_frames": len(cache.frame_indices),
             "cache": {
                 "path": str(cache_path),
-                "schema_version": "sage-stage2-input-cache-v1",
+                "schema_version": STAGE2_CACHE_SCHEMA,
                 "cpu_lru_frames": _STAGE2_CPU_LRU_FRAMES,
             },
         }
@@ -733,7 +735,8 @@ def run_appearance_refinement(
             print(
                 f"SAGE refinement: {step}/{total} "
                 f"({100 * step / total:.1f}%) | "
-                f"frame {frame_index} | loss {loss.item():.6g} | "
+                f"{source_frame_label(mapping_frames.load(frame_index).canonical)} | "
+                f"loss {loss.item():.6g} | "
                 f"{rate:.2f} step/s | elapsed {_format_duration(elapsed)} | "
                 f"ETA {_format_duration(remaining)}",
                 flush=True,

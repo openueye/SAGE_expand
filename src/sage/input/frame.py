@@ -187,4 +187,12 @@ class FrameInputs:
         raise ValueError(f"FrameInputs has no observation named {source_name!r}")
 
 
-__all__ = ["DepthObservation", "FrameInputs", "FrameMetadata"]
+def source_frame_label(frame: FrameInputs) -> str:
+    """Return the user-facing source label without exposing canonical numbering."""
+    candidate_index = frame.metadata.diagnostics.get("candidate_index")
+    if type(candidate_index) is int and candidate_index >= 0:
+        return f"ROSBAG frame {candidate_index}"
+    return f"input frame {frame.stem}"
+
+
+__all__ = ["DepthObservation", "FrameInputs", "FrameMetadata", "source_frame_label"]

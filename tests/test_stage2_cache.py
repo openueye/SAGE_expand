@@ -21,7 +21,7 @@ from sage.refinement.stage2_cache import (
 from helpers import canonical_frame, intrinsics_matrix
 
 
-def _mapping_frame(index: int):
+def _mapping_frame(index: int, *, candidate_index: int | None = None):
     valid = np.array([[True, False], [False, True]], dtype=bool)
     depth = np.where(valid, 3.0, 0.0).astype(np.float32)
     canonical = canonical_frame(
@@ -31,6 +31,17 @@ def _mapping_frame(index: int):
         intrinsics=intrinsics_matrix(2.0, 2.0, 1.0, 1.0),
         center=DepthObservation(depth, valid),
     )
+    if candidate_index is not None:
+        from dataclasses import replace
+
+        canonical = replace(
+            canonical,
+            metadata=canonical.metadata.__class__(
+                canonical.metadata.source_timestamp_ns,
+                canonical.metadata.frame_names,
+                {"candidate_index": candidate_index},
+            ),
+        )
     return CoreObservationAssembler(("LIDAR_CENTER",)).assemble(canonical)
 
 
@@ -46,7 +57,7 @@ def _identities() -> InputIdentities:
 def test_stage2_cache_round_trip_is_identity_bound_and_cpu_bounded(tmp_path) -> None:
     destination = tmp_path / ".stage2-input-cache"
     writer = Stage2InputCacheWriter(destination)
-    writer.write(_mapping_frame(0))
+    writer.write(_mapping_frame(0, candidate_index=139))
     writer.write(_mapping_frame(4))
     writer.finalize(_identities())
 
@@ -58,6 +69,7 @@ def test_stage2_cache_round_trip_is_identity_bound_and_cpu_bounded(tmp_path) -> 
     assert cache.frame_indices == (0, 4)
     np.testing.assert_allclose(first.rgb, 128 / 255)
     np.testing.assert_allclose(second.mapping.depth_m, [[3, 0], [0, 3]])
+    assert first.canonical.metadata.diagnostics["candidate_index"] == 139
     assert len(cache._lru) == 1
     with pytest.raises(ValueError, match="incompatible"):
         cache.validate_checkpoint_identity({"input": {

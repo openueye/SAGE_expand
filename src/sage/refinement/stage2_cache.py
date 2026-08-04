@@ -33,7 +33,7 @@ from ..input.identity import InputIdentities
 from ..input.rosbag.transforms import quaternion_xyzw_to_matrix
 
 
-STAGE2_CACHE_SCHEMA = "sage-stage2-input-cache-v1"
+STAGE2_CACHE_SCHEMA = "sage-stage2-input-cache-v2"
 _MANIFEST_NAME = "manifest.json"
 _FRAMES_DIR = "frames"
 _PRIORS_DIR = "dense-priors"
@@ -96,6 +96,11 @@ class Stage2InputCacheWriter:
             frame.intrinsics.fx, frame.intrinsics.fy,
             frame.intrinsics.cx, frame.intrinsics.cy,
         ), dtype=np.float64)
+        candidate_index = frame.canonical.metadata.diagnostics.get("candidate_index")
+        if candidate_index is not None and (
+            type(candidate_index) is not int or candidate_index < 0
+        ):
+            raise ValueError("Stage 2 cache ROSBAG candidate_index is invalid")
         with path.open("wb") as handle:
             np.savez_compressed(
                 handle,
@@ -107,11 +112,16 @@ class Stage2InputCacheWriter:
                 confidences=np.asarray(frame.mapping.confidences, dtype=np.float32),
                 intrinsics=intrinsics,
                 pose=pose,
+                candidate_index=np.asarray(
+                    -1 if candidate_index is None else candidate_index,
+                    dtype=np.int64,
+                ),
             )
         self._written_indices.add(frame.index)
         self._records.append({
             "frame_index": frame.index,
             "timestamp_ns": frame.timestamp_ns,
+            "candidate_index": candidate_index,
             "stem": frame.stem,
             "path": f"{_FRAMES_DIR}/{filename}",
             "sha256": _sha256_file(path),
@@ -175,7 +185,9 @@ class Stage2InputCache:
         ):
             raise ValueError("Stage 2 input cache manifest is invalid")
         InputIdentities.from_payload(payload["input_identities"])
-        expected = {"frame_index", "timestamp_ns", "stem", "path", "sha256"}
+        expected = {
+            "frame_index", "timestamp_ns", "candidate_index", "stem", "path", "sha256",
+        }
         previous = -1
         for record in payload["frames"]:
             if (
@@ -184,6 +196,13 @@ class Stage2InputCache:
                 or type(record["frame_index"]) is not int
                 or record["frame_index"] <= previous
                 or type(record["timestamp_ns"]) is not int
+                or (
+                    record["candidate_index"] is not None
+                    and (
+                        type(record["candidate_index"]) is not int
+                        or record["candidate_index"] < 0
+                    )
+                )
                 or not isinstance(record["stem"], str)
                 or not isinstance(record["path"], str)
                 or not isinstance(record["sha256"], str)
@@ -231,7 +250,7 @@ class Stage2InputCache:
             with np.load(path, allow_pickle=False) as payload:
                 expected = {
                     "frame_index", "timestamp_ns", "rgb", "depth_m", "source_types",
-                    "confidences", "intrinsics", "pose",
+                    "confidences", "intrinsics", "pose", "candidate_index",
                 }
                 if set(payload.files) != expected:
                     raise ValueError("Stage 2 cache frame payload fields are invalid")
@@ -243,10 +262,16 @@ class Stage2InputCache:
                 confidences = np.array(payload["confidences"], dtype=np.float32, copy=True)
                 intrinsics = np.array(payload["intrinsics"], dtype=np.float64, copy=True)
                 pose_values = np.array(payload["pose"], dtype=np.float64, copy=True)
+                candidate_index = int(payload["candidate_index"])
         except (OSError, ValueError) as exc:
             raise ValueError(f"Cannot decode Stage 2 cache frame: {path}") from exc
         if index != record["frame_index"] or timestamp != record["timestamp_ns"]:
             raise ValueError("Stage 2 cache frame does not match its manifest")
+        decoded_candidate_index = None if candidate_index == -1 else candidate_index
+        if decoded_candidate_index != record["candidate_index"]:
+            raise ValueError("Stage 2 cache frame source index does not match its manifest")
+        if decoded_candidate_index is not None and decoded_candidate_index < 0:
+            raise ValueError("Stage 2 cache frame source index is invalid")
         if (
             rgb_u8.ndim != 3 or rgb_u8.shape[2] != 3 or depth.shape != rgb_u8.shape[:2]
             or sources.shape != depth.shape or confidences.shape != depth.shape
@@ -277,7 +302,13 @@ class Stage2InputCache:
             reference_from_camera=matrix,
             lidar_center=None,
             lidar_fused=None,
-            metadata=FrameMetadata({}, {}, {}),
+            metadata=FrameMetadata(
+                {},
+                {},
+                {} if decoded_candidate_index is None else {
+                    "candidate_index": decoded_candidate_index,
+                },
+            ),
         )
         return MappingFrame(
             canonical=canonical,
