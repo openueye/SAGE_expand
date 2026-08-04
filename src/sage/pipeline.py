@@ -19,6 +19,10 @@ from .foundation.hashing import sha256_file
 from .foundation.identity_schema import validate_dataset_identity
 from .mapping.mapping_worker import run_formal_training, run_training_preflight
 from .method_config import SageMethodConfig
+from .refinement.appearance_config import (
+    AppearanceRefinementConfig,
+    refinement_config_identity,
+)
 from .refinement.refinement_run import (
     preflight_appearance_runtime,
     run_appearance_refinement,
@@ -113,6 +117,7 @@ def _final_output_is_resumable(
     output: Path,
     *,
     config: SageConfig,
+    refinement_config: AppearanceRefinementConfig,
     source_checkpoint: Path,
 ) -> bool:
     checkpoint = output / "appearance_checkpoint.pt"
@@ -123,11 +128,15 @@ def _final_output_is_resumable(
         payload = load_checkpoint(checkpoint)
         refinement = payload.get("appearance_refinement")
         training_identity = config.training_config_identity()
+        expected_refinement_sha256 = refinement_config_identity(
+            training_identity, refinement_config
+        )
         if (
             payload.get("checkpoint_version")
             != APPEARANCE_REFINEMENT_CHECKPOINT_VERSION
             or not isinstance(refinement, dict)
-            or refinement.get("refinement_config_sha256") != training_identity
+            or refinement.get("refinement_config_sha256")
+            != expected_refinement_sha256
             or refinement.get("source_checkpoint_sha256")
             != sha256_file(source_checkpoint)
         ):
@@ -304,6 +313,7 @@ def run_training(
     final_ready = _final_output_is_resumable(
         final_output,
         config=config,
+        refinement_config=method.refinement_config(),
         source_checkpoint=source_checkpoint,
     )
     if final_output.exists() and not final_ready:

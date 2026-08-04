@@ -179,7 +179,6 @@ class SageMethodConfig:
             payload,
             "evaluation",
             {
-                "frame_selection",
                 "min_alpha",
                 "epsilon",
                 "alpha_support",
@@ -202,8 +201,6 @@ class SageMethodConfig:
         return config
 
     def _validate(self) -> None:
-        if self.evaluation["frame_selection"] != "all":
-            raise ValueError("SAGE evaluation must use all accepted input frames")
         self.runtime_model_root()
         self.runtime_require_clean_worktree()
         self.refinement_config()
@@ -352,7 +349,6 @@ class SageMethodConfig:
                 "grid_width",
                 "min_lidar_support",
                 "confidence_exponent",
-                "robust_epsilon_m",
             },
         )
         return AppearanceRefinementConfig(

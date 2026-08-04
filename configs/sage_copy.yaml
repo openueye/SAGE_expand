@@ -86,7 +86,6 @@ refinement:
     grid_width: 2
     min_lidar_support: 8
     confidence_exponent: 2.0
-    robust_epsilon_m: 0.01
   exposure_learning_rate: 0.01
   exposure_log_gain_bound: 0.5
   exposure_bias_bound: 0.25
@@ -95,7 +94,6 @@ refinement:
   milestones: [1000, 2000, 4000]
 
 evaluation:
-  frame_selection: all
   min_alpha: 0.01
   epsilon: 0.000001
   alpha_support: 0.01

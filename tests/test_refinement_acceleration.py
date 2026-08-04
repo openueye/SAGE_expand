@@ -33,7 +33,7 @@ def _inputs():
         np.ones((2, 2), dtype=np.float32),
         DensePriorDiagnostics(0, 4, 0.0, 0.0, False),
     )
-    prior_policy = DensePriorPolicy(2, 2, 1, 2.0, 0.01)
+    prior_policy = DensePriorPolicy(2, 2, 1, 2.0)
     geometry = DenseGeometryPolicy(0.0, 1.0, 0.0, 10.0, 0.2, 0.5)
     rgb = torch.linspace(0.0, 1.0, height * width * 3).reshape(height, width, 3)
     return intrinsics, prior, prior_policy, geometry, rgb

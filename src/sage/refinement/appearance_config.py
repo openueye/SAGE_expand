@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import hashlib
+import json
 import math
 from pathlib import Path
 from typing import Any
@@ -285,3 +287,22 @@ class AppearanceRefinementConfig:
         payload = asdict(self)
         payload["milestone_steps"] = list(self.milestone_steps)
         return payload
+
+
+def refinement_config_identity(
+    training_identity: str,
+    refinement: AppearanceRefinementConfig,
+) -> str:
+    """Digest binding a mapping checkpoint's identity to the refinement config.
+
+    Reuse checks must invalidate a final output whenever either the mapping
+    stage identity or the appearance refinement parameters (dense prior,
+    learning rates, milestones, ...) change.
+    """
+    payload = {
+        "training_config_identity": training_identity,
+        "refinement_config": refinement.payload(),
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    ).hexdigest()

@@ -9,6 +9,7 @@ import math
 DENSE_ALIGNMENT_NONWORSENING_V2 = (
     "identity-nonworsening-bilinear-scale-grid-v2"
 )
+DENSE_DEPTH_ROBUST_EPSILON_M = 0.01
 
 
 def _nonnegative(value: object, name: str) -> float:
@@ -42,7 +43,6 @@ class DensePriorPolicy:
     grid_width: int
     min_lidar_support: int
     confidence_exponent: float
-    robust_epsilon_m: float
     alignment_variant: str = DENSE_ALIGNMENT_NONWORSENING_V2
 
     def __post_init__(self) -> None:
@@ -55,7 +55,7 @@ class DensePriorPolicy:
                     f"dense_prior.{name}",
                 ),
             )
-        for name in ("confidence_exponent", "robust_epsilon_m"):
+        for name in ("confidence_exponent",):
             object.__setattr__(
                 self,
                 name,
@@ -66,6 +66,11 @@ class DensePriorPolicy:
                 "dense_prior.alignment_variant must use the published "
                 "nonworsening alignment"
             )
+
+    @property
+    def robust_epsilon_m(self) -> float:
+        """Fixed epsilon for the currently disabled dense-depth branch."""
+        return DENSE_DEPTH_ROBUST_EPSILON_M
 
 
 @dataclass(frozen=True)

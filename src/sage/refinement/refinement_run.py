@@ -44,7 +44,10 @@ from ..foundation.contracts import DenseGeometryPrior, SourceType
 from ..core_input import MappingFrame
 from ..foundation.hashing import sha256_file
 from ..foundation.identity_schema import validate_dataset_identity
-from .appearance_config import AppearanceRefinementConfig
+from .appearance_config import (
+    AppearanceRefinementConfig,
+    refinement_config_identity,
+)
 from .appearance_refinement import (
     AppearanceExposureNuisance,
     AppearanceObjective,
@@ -452,7 +455,7 @@ def run_appearance_refinement(
     # The training identity, not the config file: a run must stay reusable when
     # only the input section differs between two equivalent canonical paths.
     training_identity = config.training_config_identity()
-    refinement_sha256 = training_identity
+    refinement_sha256 = refinement_config_identity(training_identity, refinement)
     if destination.exists():
         raise ValueError(
             f"Refusing an existing appearance output path: {destination}"

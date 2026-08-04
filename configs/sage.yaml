@@ -19,21 +19,13 @@ input:
     points_frame: reference_frame
     enable_fused: true
   synchronization:
-    anchor: image
-    timestamp_policy: header_stamp
     lidar_association: nearest_to_anchor
     max_lidar_skew_ms: 20.0
-    pose_interpolation: linear_slerp
     max_pose_gap_ms: 100.0
-    allow_pose_extrapolation: false
   fusion:
-    policy: centered_window
     window: 5
     max_age_ms: 500.0
-    z_buffer: nearest
     conflict_threshold_m: 1.0
-    current_scan_priority: true
-    warmup_policy: drop_incomplete_window
   depth:
     min_depth_m: 0.1
     max_depth_m: 200.0
@@ -106,7 +98,6 @@ refinement:
     grid_width: 2
     min_lidar_support: 8
     confidence_exponent: 2.0
-    robust_epsilon_m: 0.01
   exposure_learning_rate: 0.01
   exposure_log_gain_bound: 0.5
   exposure_bias_bound: 0.25
@@ -115,7 +106,6 @@ refinement:
   milestones: [1000, 2000, 4000]
 
 evaluation:
-  frame_selection: all
   min_alpha: 0.01
   epsilon: 0.000001
   alpha_support: 0.01
