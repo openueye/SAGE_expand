@@ -115,3 +115,4 @@ evaluation:
   alpha_support: 0.01
   hit_target_center: 0.5
   hit_target_fused: 0.35
+  # checkpoint_stages: ["stage1_mapping", "stage2_refinement"]
