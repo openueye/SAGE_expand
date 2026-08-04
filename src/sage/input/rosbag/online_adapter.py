@@ -2,9 +2,10 @@
 
 The legacy ROSBAG adapter intentionally compiles a global plan.  This module
 is the explicit alternative for new runs: it performs only static topic and
-calibration checks at startup, then resolves synchronization, fusion windows,
-projection checks and the canonical sequence digest while the bag is consumed
-once.  It never silently falls back to the global planner.
+calibration and compact header-index checks at startup, then resolves
+synchronization, fusion windows, projection checks and the canonical sequence
+digest while canonical frames are consumed once.  It never silently falls back
+to the global planner.
 """
 
 from __future__ import annotations
@@ -68,7 +69,7 @@ class _RunningDistribution:
 
 
 class OnlineRosbagAdapter:
-    """Produce a single online canonical-frame stream from a monotonic bag."""
+    """Produce a single online canonical-frame stream from a time-indexed bag."""
 
     def __init__(self, spec: RosbagInputSpec) -> None:
         if not isinstance(spec, RosbagInputSpec):
@@ -78,7 +79,7 @@ class OnlineRosbagAdapter:
         self._spec = spec
 
     def preflight(self) -> StreamingResolvedInput:
-        """Read cheap static metadata only; all message validation is online."""
+        """Index compact headers; validate frame content while streaming frames."""
         spec = self._spec
         report = PreflightReport(ADAPTER_TYPE)
         calibration = load_calibration(spec.calibration_path)
@@ -125,7 +126,7 @@ class OnlineRosbagAdapter:
         return {
             "adapter_type": ADAPTER_TYPE,
             "execution": EXECUTION_ONLINE_WINDOW_V2,
-            "online_admissibility": "effective-header-timestamp-monotonic-v1",
+            "online_admissibility": "effective-header-timestamp-sorted-metadata-v1",
             "payload_cache_messages": _PAYLOAD_CACHE_MESSAGES,
             "topics": {
                 role: dict(identity)

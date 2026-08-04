@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sqlite3
+
 import numpy as np
 import pytest
 
@@ -125,6 +127,49 @@ def test_online_reader_exposes_static_topics_then_one_ordered_event_pass(tmp_pat
     )
     with pytest.raises(RuntimeError, match="exactly one"):
         list(reader.events())
+
+
+def test_online_reader_orders_events_by_header_time_not_bag_write_time(tmp_path) -> None:
+    spec = fixtures.synthetic_input(tmp_path)
+    database = next(spec.rosbag_path.glob("*.db3"))
+    with sqlite3.connect(database) as connection:
+        # The fixture payloads keep their sensor header timestamps, while the
+        # storage timestamps simulate a recorder that wrote by arrival order.
+        connection.execute("UPDATE messages SET timestamp = rowid")
+        connection.commit()
+
+    reader = OnlineRosbagReader(
+        spec.rosbag_path,
+        topics=spec.topic_roles(),
+        time_offsets_ns={"lidar": 0, "odometry": 0},
+        payload_cache_messages=2,
+    )
+    assert not reader._payload_cache
+    events = list(reader.events())
+
+    timestamps = [event.locator.effective_timestamp_ns for event in events]
+    assert timestamps == sorted(timestamps)
+    assert {event.role for event in events} == {"image", "lidar", "odometry"}
+
+
+def test_online_adapter_streams_frames_from_async_write_order(tmp_path) -> None:
+    from dataclasses import replace
+
+    spec = fixtures.synthetic_input(tmp_path)
+    database = next(spec.rosbag_path.glob("*.db3"))
+    with sqlite3.connect(database) as connection:
+        connection.execute("UPDATE messages SET timestamp = rowid")
+        connection.commit()
+
+    resolved = OnlineRosbagAdapter(
+        replace(spec, execution="online-window-v2")
+    ).preflight()
+    frames = list(resolved.frames())
+
+    assert len(frames) == fixtures.FRAME_COUNT - 4
+    assert [frame.timestamp_ns for frame in frames] == sorted(
+        frame.timestamp_ns for frame in frames
+    )
 
 
 # -- transforms -------------------------------------------------------------

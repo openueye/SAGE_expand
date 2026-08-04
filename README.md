@@ -171,11 +171,13 @@ evaluation:
   checkpoint_stages: [stage2_refinement]
 ```
 
-`online-window-v2` performs only calibration and topic-table checks before
-mapping. Its one reader pass performs effective-time synchronization, frame
-and PointCloud2-layout checks, projection checks, and the canonical sequence
-digest while Stage 1 maps. It requires non-decreasing effective header times
-in bag write order; use `batch-v1` for a bag that needs global reordering.
+`online-window-v2` builds a compact header/row metadata index before mapping,
+sorts the index by effective header time, and keeps image/cloud payload reads
+inside the one canonical-frame pass. That pass performs effective-time
+synchronization, frame and PointCloud2-layout checks, projection checks, and
+the canonical sequence digest while Stage 1 maps. ROSBAG physical write order
+therefore does not need to match sensor header order; payloads remain on disk
+until their indexed event is consumed.
 
 Stage 1 writes `.stage2-input-cache` beside `structure/`. This is a transient,
 identity-bound handoff containing only mapping frames; Stage 2 reads it with

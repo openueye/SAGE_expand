@@ -58,7 +58,7 @@ class MessageLocator:
 
 @dataclass(frozen=True)
 class OnlineMessage:
-    """One declared-topic record as it appears in the bag's write order."""
+    """One declared-topic record in effective header-time order."""
 
     role: str
     locator: MessageLocator
@@ -281,14 +281,14 @@ class RosbagReader:
 
 
 class OnlineRosbagReader:
-    """Bounded-memory ROSBAG reader for an effective-time-monotonic bag.
+    """Metadata-indexed ROSBAG reader for an effective-time-ordered stream.
 
-    Construction reads only bag metadata and topic tables.  ``events()`` then
-    performs the one permitted sequential message pass.  Unlike
-    :class:`RosbagReader`, this class never builds global image/LiDAR indexes
-    or an odometry track.  It rejects a bag whose effective header timeline is
-    not monotonic, because sorting it would turn the online mode back into a
-    global replay.
+    Construction records only message headers and row locators, then sorts that
+    metadata by effective header timestamp.  ``events()`` performs the one
+    permitted sequential message pass and fetches payloads on demand.  This is
+    the same streaming boundary used by the Licmapping adapter: ordering is
+    resolved from compact metadata, while image and cloud payloads remain on
+    disk until an event is consumed.
     """
 
     def __init__(
@@ -322,6 +322,8 @@ class OnlineRosbagReader:
         self._topic_ids_by_shard: dict[int, dict[int, str]] = {}
         self.message_types: dict[str, str] = {}
         self.topic_identities: dict[str, dict[str, object]] = {}
+        self._event_index: tuple[tuple[str, MessageLocator], ...] = ()
+        self._event_headers: dict[MessageLocator, dict[str, object]] = {}
         self._payload_cache_messages = payload_cache_messages
         self._payload_cache: OrderedDict[MessageLocator, bytes] = OrderedDict()
         self._events_started = False
@@ -359,6 +361,7 @@ class OnlineRosbagReader:
         for role, topic in self._topics.items():
             if role not in self.topic_identities:
                 raise ValueError(f"Bag does not contain the declared {role} topic: {topic}")
+        self._index_event_metadata()
 
     def _record_topic_identity(
         self, role: str, topic: str, message_type: str, serialization: str,
@@ -379,41 +382,60 @@ class OnlineRosbagReader:
         self.topic_identities[role] = {**(existing or {}), **observed}
         self.message_types[role] = message_type
 
+    def _index_event_metadata(self) -> None:
+        indexed: list[tuple[str, MessageLocator]] = []
+        counts = {role: 0 for role in self._topics}
+        ranges: dict[str, list[int]] = {}
+        for shard_index, roles in self._topic_ids_by_shard.items():
+            connection = self._connection(shard_index)
+            for topic_id, role in roles.items():
+                if role == "odometry":
+                    rows = connection.execute(
+                        "SELECT rowid, data FROM messages WHERE topic_id = ? ORDER BY rowid",
+                        (topic_id,),
+                    )
+                else:
+                    prefix = _CLOUD_PREFIX_BYTES if role == "lidar" else _IMAGE_PREFIX_BYTES
+                    rows = connection.execute(
+                        "SELECT rowid, substr(data, 1, ?) FROM messages "
+                        "WHERE topic_id = ? ORDER BY rowid",
+                        (prefix, topic_id),
+                    )
+                for row_id, blob in rows:
+                    header = self._header(role, bytes(blob))
+                    stamp = header_timestamp_ns(header)
+                    locator = MessageLocator(
+                        stamp + self._offsets[role], stamp,
+                        shard_index, int(topic_id), int(row_id),
+                    )
+                    indexed.append((role, locator))
+                    self._event_headers[locator] = header
+                    counts[role] += 1
+                    ranges.setdefault(role, []).append(locator.effective_timestamp_ns)
+
+        self._event_index = tuple(sorted(
+            indexed,
+            key=lambda item: (
+                item[1].effective_timestamp_ns, item[1].shard_index, item[1].row_id,
+            ),
+        ))
+        for role, count in counts.items():
+            identity = self.topic_identities[role]
+            identity["message_count"] = count
+            if count:
+                timestamps = ranges[role]
+                identity["effective_timestamp_range_ns"] = [min(timestamps), max(timestamps)]
+
     def events(self) -> Iterator[OnlineMessage]:
         """Yield all declared-topic events in one effective-time-ordered pass."""
         if self._events_started:
             raise RuntimeError("Online ROSBAG reader supports exactly one event pass")
         self._events_started = True
-        previous_timestamp: int | None = None
         try:
-            for shard_index in range(len(self.shards)):
-                roles = self._topic_ids_by_shard[shard_index]
-                if not roles:
-                    continue
-                connection = self._connection(shard_index)
-                placeholders = ", ".join("?" for _ in roles)
-                rows = connection.execute(
-                    "SELECT rowid, topic_id, data FROM messages "
-                    f"WHERE topic_id IN ({placeholders}) ORDER BY timestamp, rowid",
-                    tuple(roles),
+            for role, locator in self._event_index:
+                yield OnlineMessage(
+                    role, locator, self.payload(locator), self._event_headers[locator],
                 )
-                for row_id, topic_id, blob in rows:
-                    role = roles[int(topic_id)]
-                    payload = bytes(blob)
-                    header = self._header(role, payload)
-                    stamp = header_timestamp_ns(header)
-                    effective_timestamp = stamp + self._offsets[role]
-                    if previous_timestamp is not None and effective_timestamp < previous_timestamp:
-                        raise ValueError(
-                            "online-window-v2 requires non-decreasing effective header timestamps "
-                            "in ROSBAG write order; use batch-v1 for an out-of-order bag"
-                        )
-                    previous_timestamp = effective_timestamp
-                    locator = MessageLocator(
-                        effective_timestamp, stamp, shard_index, int(topic_id), int(row_id),
-                    )
-                    self._cache_payload(locator, payload)
-                    yield OnlineMessage(role, locator, payload, header)
         finally:
             self.close()
 
@@ -449,6 +471,8 @@ class OnlineRosbagReader:
         for connection in self._connections.values():
             connection.close()
         self._connections.clear()
+        self._event_headers.clear()
+        self._event_index = ()
         self._payload_cache.clear()
 
     def __enter__(self) -> "OnlineRosbagReader":

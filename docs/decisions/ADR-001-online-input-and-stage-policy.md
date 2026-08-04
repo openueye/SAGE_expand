@@ -26,10 +26,13 @@ not read the same ROSBAG once per checkpoint.
 Add an explicit `input.execution: online-window-v2` mode while preserving the
 legacy `batch-v1` configuration and artifacts.
 
-- Startup checks only calibration and declared topic metadata.
-- The one online reader pass verifies effective-time monotonicity, frame IDs,
-  PointCloud2 layout, synchronization, projection coverage and canonical frame
-  content while Stage 1 maps.
+- Startup checks calibration, declared topic metadata and a compact index of
+  message headers and row locators. The index is sorted by effective header
+  timestamp, independent of ROSBAG physical write order; image and cloud
+  payloads remain on disk until their indexed event is consumed.
+- The one online canonical-frame pass verifies effective-time ordering, frame
+  IDs, PointCloud2 layout, synchronization, projection coverage and canonical
+  frame content while Stage 1 maps.
 - An online contract has a deferred frame count and may be consumed once.
   Its canonical sequence identity settles at EOF; identity access before EOF
   is an error rather than an implicit replay. The v2 canonical-contract
@@ -68,8 +71,10 @@ stream.
 
 ## Consequences
 
-- `online-window-v2` rejects an effective-time out-of-order bag; users must
-  select `batch-v1` if they require global reordering.
+- `online-window-v2` stores compact message metadata in memory in order to
+  support asynchronous ROSBAG write order while keeping payloads and canonical
+  frames streaming. It does not build the batch adapter's synchronized frame
+  plan or replay canonical frames before Stage 1.
 - Existing v1 configs retain their behavior and serialized contract revision.
 - Online contracts use revision 2 and do not silently exchange checkpoints
   with old revision-1 prepared scenes.
