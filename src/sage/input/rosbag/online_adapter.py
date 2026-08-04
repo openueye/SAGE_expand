@@ -316,7 +316,7 @@ class OnlineRosbagAdapter:
                         if spec.frame_limit is not None and accepted_count >= spec.frame_limit:
                             stopped = True
                             break
-                self._trim_buffers(pending, lidars, poses, spec)
+                self._trim_buffers(pending, lidars, poses, spec, watermark_ns=current_time)
                 if stopped:
                     break
 
@@ -612,18 +612,31 @@ class OnlineRosbagAdapter:
         lidars: deque[MessageLocator],
         poses: deque[PoseSample],
         spec: RosbagInputSpec,
+        *,
+        watermark_ns: int | None,
     ) -> None:
-        if not pending:
-            while len(lidars) > 1:
-                lidars.popleft()
-            while len(poses) > 2:
-                poses.popleft()
+        # A lidar scan associated to the next image (pending, or not yet
+        # arrived when pending is momentarily empty between two images) can
+        # carry a timestamp up to max_lidar_skew_ns earlier than that image,
+        # and its own pose bracket can reach a further max_pose_gap_ns behind
+        # the scan timestamp. Neither buffer may be trimmed past that margin,
+        # or association fails even though the full stream covers it. When
+        # pending is empty there is no next-image timestamp yet, so the most
+        # recently seen event (watermark_ns) is the best available anchor for
+        # the same margin -- collapsing to a bounded floor here (as the code
+        # used to) discards history a not-yet-arrived image may still need.
+        anchor = pending[0].image.effective_timestamp_ns if pending else watermark_ns
+        if anchor is None:
             return
-        earliest = pending[0].image.effective_timestamp_ns
-        lidar_keep_after = earliest - spec.synchronization.max_lidar_skew_ns
+        lidar_keep_after = anchor - spec.synchronization.max_lidar_skew_ns
         while len(lidars) > 1 and lidars[1].effective_timestamp_ns < lidar_keep_after:
             lidars.popleft()
-        while len(poses) > 2 and poses[1].timestamp_ns <= earliest:
+        pose_keep_after = (
+            anchor
+            - spec.synchronization.max_lidar_skew_ns
+            - spec.synchronization.max_pose_gap_ns
+        )
+        while len(poses) > 2 and poses[1].timestamp_ns <= pose_keep_after:
             poses.popleft()
 
     @staticmethod
