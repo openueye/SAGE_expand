@@ -17,6 +17,12 @@ def prepare_scene(method: SageMethodConfig, output: Path) -> Path:
     config = method.resolve(Path(output).resolve())
     resolved = config.input.create_adapter().preflight()
     print("\n".join(resolved.summary_lines()), flush=True)
+    if resolved.contract.canonical.frame_count is None:
+        raise ValueError(
+            "sage prepare does not support online-window-v2 because a Prepared Scene "
+            "requires a frame count before it starts writing. Use input.execution: "
+            "batch-v1 for an explicit offline export."
+        )
     writer = PreparedSceneWriter(
         Path(output).resolve(),
         canonical=resolved.contract.canonical,

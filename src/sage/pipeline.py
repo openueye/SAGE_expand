@@ -7,7 +7,11 @@ from pathlib import Path
 import shutil
 
 from .artifacts import load_checkpoint
-from .evaluation.evaluation_run import run_evaluation
+from .evaluation.evaluation_run import (
+    STAGE1_MAPPING,
+    STAGE2_REFINEMENT,
+    run_evaluations,
+)
 from .execution import (
     EXECUTION_RECEIPT_SCHEMA_VERSION,
     publish_json_atomic,
@@ -27,11 +31,24 @@ from .refinement.refinement_run import (
     preflight_appearance_runtime,
     run_appearance_refinement,
 )
+from .refinement.stage2_cache import (
+    Stage2InputCache,
+    default_stage2_cache_path,
+    remove_stage2_cache,
+)
 
 
 def _current_input_identity(config: SageConfig):
-    """Resolve the configured input once, to compare against a stored artifact."""
-    return config.input.create_adapter().preflight().identities
+    """Obtain identity without replaying a completed Stage 1 input stream."""
+    cache_path = default_stage2_cache_path(config.output_dir)
+    if cache_path.is_dir():
+        return Stage2InputCache(cache_path).input_identities
+    resolved = config.input.create_adapter().preflight()
+    if resolved.contract.canonical.frame_count is None:
+        raise ValueError(
+            "online-window-v2 resume requires its Stage 1 transient input cache"
+        )
+    return resolved.identities
 
 
 def _remove_orphaned_staging(output: Path) -> None:
@@ -173,6 +190,7 @@ def _evaluation_output_is_resumable(
             load_checkpoint(checkpoint).get("identity_snapshot"),
             current_identity,
         )
+        identities = current_identity.payload()
         return (
             isinstance(manifest, dict)
             and isinstance(report, dict)
@@ -180,8 +198,8 @@ def _evaluation_output_is_resumable(
             == sha256_file(checkpoint)
             and manifest.get("config", {}).get("sha256")
             == sha256_file(config.config_path)
-            and manifest.get("dataset_identity") == current_identity
-            and report.get("dataset_identity") == current_identity
+            and manifest.get("input", {}).get("identities") == identities
+            and report.get("input", {}).get("identities") == identities
             and manifest.get("artifacts", {}).get("report_sha256")
             == sha256_file(report_path)
         )
@@ -275,6 +293,7 @@ def run_training(
         "structure.execution.json",
         "final",
         "evaluation",
+        ".stage2-input-cache",
     }
     if destination.exists():
         _remove_orphaned_staging(destination)
@@ -332,24 +351,42 @@ def run_training(
             f"SAGE appearance phase did not publish {final_checkpoint}"
         )
 
-    evaluation_ready = _evaluation_output_is_resumable(
-        evaluation_output,
-        config=config,
-        checkpoint=final_checkpoint,
-    )
-    if evaluation_output.exists() and not evaluation_ready:
-        raise ValueError(
-            f"Invalid partial evaluation output: {evaluation_output}"
+    evaluation_stages = method.evaluation_checkpoint_stages()
+    evaluation_checkpoints = {
+        STAGE1_MAPPING: source_checkpoint,
+        STAGE2_REFINEMENT: final_checkpoint,
+    }
+    evaluation_outputs = {
+        stage: (
+            evaluation_output
+            if evaluation_stages == (STAGE2_REFINEMENT,)
+            else evaluation_output / stage
         )
-    if not evaluation_ready:
-        print("SAGE stage 3/3: final evaluation", flush=True)
-        run_evaluation(
+        for stage in evaluation_stages
+    }
+    evaluation_ready = {
+        stage: _evaluation_output_is_resumable(
+            path,
+            config=config,
+            checkpoint=evaluation_checkpoints[stage],
+        )
+        for stage, path in evaluation_outputs.items()
+    }
+    if any(path.exists() for path in evaluation_outputs.values()) and not all(evaluation_ready.values()):
+        raise ValueError("Evaluation outputs are partially complete or invalid")
+    if not all(evaluation_ready.values()):
+        print("SAGE stage 3/3: streaming evaluation", flush=True)
+        run_evaluations(
             config,
-            final_checkpoint,
-            evaluation_output,
+            {stage: evaluation_checkpoints[stage] for stage in evaluation_stages},
+            evaluation_outputs,
             device=device,
             refinement_config=method.refinement_config(),
+            allowed_checkpoint_stages=evaluation_stages,
         )
+    # This cache is only the Stage 1 → Stage 2 retry handoff.  Keep it through
+    # a Stage 3 failure, then remove it after the complete pipeline succeeds.
+    remove_stage2_cache(default_stage2_cache_path(structure_output))
     if sha256_file(method.path) != config_sha256:
         raise RuntimeError(
             f"SAGE configuration changed during the run: {method.path}"
@@ -373,7 +410,14 @@ def run_training(
                 final_checkpoint.relative_to(destination)
             ),
             "final_checkpoint_sha256": sha256_file(final_checkpoint),
-            "evaluation": str(evaluation_output.relative_to(destination)),
+            "evaluation": (
+                str(evaluation_output.relative_to(destination))
+                if evaluation_stages == (STAGE2_REFINEMENT,)
+                else {
+                    stage: str(path.relative_to(destination))
+                    for stage, path in evaluation_outputs.items()
+                }
+            ),
         },
     }
     publish_json_atomic(destination / "run_manifest.json", manifest)

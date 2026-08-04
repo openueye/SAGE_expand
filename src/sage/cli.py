@@ -74,6 +74,7 @@ def main(argv: list[str] | None = None) -> int:
         device=args.device,
         refinement_config=method.refinement_config(),
         allow_stage1_checkpoint=args.stage1,
+        allowed_checkpoint_stages=method.evaluation_checkpoint_stages(),
     )
     print(f"SAGE evaluation complete: {output}", flush=True)
     return 0

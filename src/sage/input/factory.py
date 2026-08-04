@@ -8,7 +8,12 @@ from typing import Any, Mapping
 from .adapter import InputAdapter
 from .prepared_scene.adapter import ADAPTER_TYPE as PREPARED_SCENE_TYPE, PreparedSceneAdapter
 from .rosbag.adapter import GenericRosbagAdapter
-from .rosbag.spec import ADAPTER_TYPE as ROSBAG_TYPE, RosbagInputSpec
+from .rosbag.online_adapter import OnlineRosbagAdapter
+from .rosbag.spec import (
+    ADAPTER_TYPE as ROSBAG_TYPE,
+    EXECUTION_ONLINE_WINDOW_V2,
+    RosbagInputSpec,
+)
 
 
 ADAPTER_TYPES = (ROSBAG_TYPE, PREPARED_SCENE_TYPE)
@@ -20,7 +25,10 @@ def create_input_adapter(payload: Mapping[str, Any], *, base_dir: Path) -> Input
         raise ValueError("SAGE input section must declare a type")
     adapter_type = str(payload["type"])
     if adapter_type == ROSBAG_TYPE:
-        return GenericRosbagAdapter(RosbagInputSpec.from_payload(payload, base_dir=base_dir))
+        spec = RosbagInputSpec.from_payload(payload, base_dir=base_dir)
+        if spec.execution == EXECUTION_ONLINE_WINDOW_V2:
+            return OnlineRosbagAdapter(spec)
+        return GenericRosbagAdapter(spec)
     if adapter_type == PREPARED_SCENE_TYPE:
         expected = {"type", "scene"}
         if set(payload) != expected:

@@ -115,10 +115,10 @@ sha256sum "${THESIS_ROOT}"/03_Datasets/001_Odin/*/cam_in_ex.txt
 
 ## Configuration identity
 
-`configs/sage.yaml` is the frozen SAGE method baseline. It contains the
-mapping, refinement, evaluation, and ROSBAG synchronization settings. Its
-`input:` section is still a concrete example, so it should not be treated as
-a universal dataset default.
+`configs/sage.yaml` is the SAGE method baseline and currently points to the
+local Ferrari1 capture. It contains the mapping, refinement, evaluation, and
+ROSBAG synchronization settings. Its `input:` section is a concrete Scene
+example, so it should not be treated as a universal dataset default.
 
 For each Scene, create a separate run config derived from `configs/sage.yaml`
 and change only the input identity and any machine-local runtime paths. Do not
@@ -154,6 +154,52 @@ The full YAML remains strict: unknown fields and missing fields are rejected.
 The command line carries run control only; it does not override the bag,
 calibration, topics, or synchronization policy.
 
+### Online mapping and evaluation policy
+
+New runs can opt into a one-pass ROSBAG input by adding the explicit input
+execution revision below. The frozen baseline remains `batch-v1`; do not
+change an existing reproduction config in place.
+
+```yaml
+input:
+  type: rosbag2
+  execution: online-window-v2
+  # rosbag, calibration, topics, lidar, synchronization, fusion, depth as above
+
+evaluation:
+  # Default when omitted: [stage2_refinement]
+  checkpoint_stages: [stage2_refinement]
+```
+
+`online-window-v2` performs only calibration and topic-table checks before
+mapping. Its one reader pass performs effective-time synchronization, frame
+and PointCloud2-layout checks, projection checks, and the canonical sequence
+digest while Stage 1 maps. It requires non-decreasing effective header times
+in bag write order; use `batch-v1` for a bag that needs global reordering.
+
+Stage 1 writes `.stage2-input-cache` beside `structure/`. This is a transient,
+identity-bound handoff containing only mapping frames; Stage 2 reads it with
+bounded CPU/GPU LRUs and never replays an online ROSBAG. The cache remains
+after a failed Stage 2 or Stage 3 attempt for retry, and is removed only after
+the complete three-stage pipeline publishes successfully.
+
+To compare both checkpoints in one Stage 3 input pass, make the policy
+explicit:
+
+```yaml
+evaluation:
+  min_alpha: 0.01
+  epsilon: 0.000001
+  alpha_support: 0.01
+  hit_target_center: 0.5
+  hit_target_fused: 0.35
+  checkpoint_stages: [stage1_mapping, stage2_refinement]
+```
+
+This writes separate reports below `evaluation/stage1_mapping/` and
+`evaluation/stage2_refinement/`. Stage 1 reports are marked as mapping-only;
+the default final-quality report remains the refinement checkpoint.
+
 ## ROSBAG adapter contract
 
 The `rosbag2` adapter owns bag decoding, timestamp association, pose
@@ -169,7 +215,7 @@ fusion. The current baseline uses:
 - depth limits of 0.1 m to 200 m;
 - evaluation over all accepted canonical frames.
 
-The adapter performs a preflight before mapping. It checks the bag schema,
+The `batch-v1` adapter performs a full preflight before mapping. It checks the bag schema,
 declared topics, message types, frame IDs, synchronization plan, calibration,
 projection coverage, CUDA, renderer, SPNet, and metric dependencies.
 

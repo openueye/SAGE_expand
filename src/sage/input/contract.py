@@ -16,6 +16,7 @@ from .identity import canonical_json_sha256
 
 CANONICAL_CONTRACT_SCHEMA = "sage_canonical_input"
 CANONICAL_CONTRACT_REVISION = 1
+ONLINE_CANONICAL_CONTRACT_REVISION = 2
 
 DEPTH_DEFINITION = "camera_optical_z"
 LENGTH_UNIT = "meter"
@@ -29,7 +30,7 @@ CANONICAL_SOURCES = ("LIDAR_CENTER", "LIDAR_FUSED")
 class CanonicalInputContract:
     """Adapter-independent semantics of an accepted canonical frame sequence."""
 
-    frame_count: int
+    frame_count: int | None
     reference_frame: str
     camera_frame: str
     image_size: tuple[int, int]
@@ -39,9 +40,20 @@ class CanonicalInputContract:
     depth_definition: str = DEPTH_DEFINITION
     length_unit: str = LENGTH_UNIT
     pose_convention: str = POSE_CONVENTION
+    schema_revision: int = CANONICAL_CONTRACT_REVISION
 
     def __post_init__(self) -> None:
-        if type(self.frame_count) is not int or self.frame_count < 1:
+        if self.schema_revision not in {
+            CANONICAL_CONTRACT_REVISION,
+            ONLINE_CANONICAL_CONTRACT_REVISION,
+        }:
+            raise ValueError("Canonical contract schema_revision is unsupported")
+        if self.frame_count is None:
+            if self.schema_revision != ONLINE_CANONICAL_CONTRACT_REVISION:
+                raise ValueError(
+                    "Only the online canonical contract may defer frame_count until EOF"
+                )
+        elif type(self.frame_count) is not int or self.frame_count < 1:
             raise ValueError("Canonical contract frame_count must be a positive integer")
         for name in ("reference_frame", "camera_frame"):
             value = getattr(self, name)
@@ -77,7 +89,7 @@ class CanonicalInputContract:
     def payload(self) -> dict[str, object]:
         return {
             "schema_name": CANONICAL_CONTRACT_SCHEMA,
-            "schema_revision": CANONICAL_CONTRACT_REVISION,
+            "schema_revision": self.schema_revision,
             "frame_count": self.frame_count,
             "reference_frame": self.reference_frame,
             "camera_frame": self.camera_frame,
@@ -101,16 +113,19 @@ class CanonicalInputContract:
         }
         if set(payload) != expected:
             raise ValueError("Canonical contract payload fields are invalid")
-        if (
-            payload["schema_name"] != CANONICAL_CONTRACT_SCHEMA
-            or payload["schema_revision"] != CANONICAL_CONTRACT_REVISION
-        ):
+        if payload["schema_name"] != CANONICAL_CONTRACT_SCHEMA or payload["schema_revision"] not in {
+            CANONICAL_CONTRACT_REVISION,
+            ONLINE_CANONICAL_CONTRACT_REVISION,
+        }:
             raise ValueError(
                 "Unsupported canonical input contract schema. This branch accepts only "
-                f"{CANONICAL_CONTRACT_SCHEMA} revision {CANONICAL_CONTRACT_REVISION}."
+                f"{CANONICAL_CONTRACT_SCHEMA} revisions "
+                f"{CANONICAL_CONTRACT_REVISION} and {ONLINE_CANONICAL_CONTRACT_REVISION}."
             )
         return cls(
-            frame_count=int(payload["frame_count"]),
+            frame_count=(
+                None if payload["frame_count"] is None else int(payload["frame_count"])
+            ),
             reference_frame=str(payload["reference_frame"]),
             camera_frame=str(payload["camera_frame"]),
             image_size=tuple(payload["image_size"]),
@@ -120,11 +135,21 @@ class CanonicalInputContract:
             depth_definition=str(payload["depth_definition"]),
             length_unit=str(payload["length_unit"]),
             pose_convention=str(payload["pose_convention"]),
+            schema_revision=int(payload["schema_revision"]),
         )
 
     @property
     def identity(self) -> str:
-        return canonical_json_sha256(self.payload())
+        payload = self.payload()
+        if self.schema_revision == ONLINE_CANONICAL_CONTRACT_REVISION:
+            # The online reader must start its incremental frame digest before
+            # it can know how many frames will be accepted. The final count
+            # remains in the persisted contract and in the sequence digest,
+            # but it cannot perturb the contract seed at EOF; otherwise the
+            # resulting sequence digest would be bound to a provisional,
+            # non-persisted contract identity.
+            payload["frame_count"] = None
+        return canonical_json_sha256(payload)
 
 
 @dataclass(frozen=True)
@@ -165,5 +190,6 @@ class ResolvedInputContract:
 __all__ = [
     "CANONICAL_SOURCES",
     "CanonicalInputContract",
+    "ONLINE_CANONICAL_CONTRACT_REVISION",
     "ResolvedInputContract",
 ]

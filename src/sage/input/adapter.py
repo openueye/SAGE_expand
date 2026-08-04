@@ -76,18 +76,26 @@ class ResolvedInput:
         )
 
     def summary_lines(self) -> list[str]:
-        """The uniform run header both adapters print."""
+        """Return a cheap run header without consuming canonical frames.
+
+        The canonical sequence identity is only available after a completed
+        frame pass.  Logging must not turn that deferred identity into an
+        implicit pre-training replay.
+        """
         canonical = self.contract.canonical
         width, height = canonical.image_size
         fusion = canonical.fusion
         lines = [
             f"Input adapter: {self.contract.adapter_type}",
-            f"Canonical sequence identity: {self.identities.canonical_sequence_identity}",
-            f"Canonical contract identity: {self.identities.canonical_contract_identity}",
-            f"Adapter provenance identity: {self.identities.adapter_provenance_identity}",
+            f"Canonical contract identity: {self.contract.canonical_contract_identity}",
+            f"Adapter provenance identity: {self.contract.adapter_provenance_identity}",
             "",
             "Frames:",
-            f"  accepted: {self.report.accepted_frames}",
+            (
+                "  accepted: pending (online stream)"
+                if canonical.frame_count is None
+                else f"  accepted: {self.report.accepted_frames}"
+            ),
             f"  rejected: {len(self.report.rejected_frames)}",
             "",
             "Camera:",
@@ -113,6 +121,60 @@ class ResolvedInput:
         return lines
 
 
+@dataclass(eq=False)
+class StreamingResolvedInput(ResolvedInput):
+    """One-pass input whose canonical contract settles at EOF.
+
+    Online adapters may not know the accepted frame count before consuming the
+    bag.  Their static contract is revisioned separately and has
+    ``frame_count=None``.  The stream is deliberately single-use: attempting
+    to obtain an identity before EOF is an error, rather than an implicit
+    replay of a ROSBAG.
+    """
+
+    _finalize_contract: Callable[[int], ResolvedInputContract] | None = None
+    _consumed: bool = False
+
+    def __post_init__(self) -> None:
+        if self.contract.canonical.frame_count is not None:
+            raise ValueError("Streaming input must begin with a deferred frame_count")
+        if self._finalize_contract is None:
+            raise ValueError("Streaming input requires an EOF contract finalizer")
+
+    def frames(self) -> Iterator[FrameInputs]:
+        if self._consumed:
+            raise RuntimeError(
+                "Online input was already consumed; it cannot replay a ROSBAG. "
+                "Use its published transient cache for a later stage."
+            )
+        self._consumed = True
+        digest = CanonicalSequenceDigest(self.contract.canonical_contract_identity)
+        emitted = 0
+        for frame in self._frames():
+            if frame.frame_index != emitted:
+                raise ValueError(
+                    f"Streaming input emitted frame_index={frame.frame_index}, expected {emitted}"
+                )
+            digest.update(frame)
+            emitted += 1
+            yield frame
+        final_contract = self._finalize_contract(emitted)
+        if final_contract.canonical.frame_count != emitted:
+            raise ValueError(
+                "Online input final contract frame_count does not match emitted frames"
+            )
+        self.contract = final_contract
+        self._sequence_identity = digest.hexdigest()
+
+    @property
+    def canonical_sequence_identity(self) -> str:
+        if self._sequence_identity is None:
+            raise RuntimeError(
+                "Online canonical identity is available only after the input reaches EOF"
+            )
+        return self._sequence_identity
+
+
 @runtime_checkable
 class InputAdapter(Protocol):
     """Every input source SAGE supports implements exactly this."""
@@ -122,4 +184,4 @@ class InputAdapter(Protocol):
         ...
 
 
-__all__ = ["InputAdapter", "ResolvedInput"]
+__all__ = ["InputAdapter", "ResolvedInput", "StreamingResolvedInput"]

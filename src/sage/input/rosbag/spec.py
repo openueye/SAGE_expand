@@ -15,6 +15,9 @@ from typing import Any, Mapping
 
 
 ADAPTER_TYPE = "rosbag2"
+EXECUTION_BATCH_V1 = "batch-v1"
+EXECUTION_ONLINE_WINDOW_V2 = "online-window-v2"
+EXECUTION_MODES = (EXECUTION_BATCH_V1, EXECUTION_ONLINE_WINDOW_V2)
 
 TIMESTAMP_POLICIES = ("header_stamp",)
 LIDAR_ASSOCIATIONS = ("nearest_to_anchor", "latest_not_after_anchor")
@@ -188,6 +191,7 @@ class RosbagInputSpec:
     fusion: FusionSpec = FusionSpec()
     depth: DepthSpec = DepthSpec()
     frame_limit: int | None = None
+    execution: str = EXECUTION_BATCH_V1
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "rosbag_path", Path(self.rosbag_path).expanduser().resolve())
@@ -204,6 +208,8 @@ class RosbagInputSpec:
             raise ValueError("input.lidar.enable_fused must be a boolean")
         if self.frame_limit is not None and (type(self.frame_limit) is not int or self.frame_limit < 1):
             raise ValueError("input.frame_limit must be a positive integer when set")
+        if self.execution not in EXECUTION_MODES:
+            raise ValueError(f"input.execution must be one of {EXECUTION_MODES}")
 
     @property
     def sources(self) -> tuple[str, ...]:
@@ -220,7 +226,7 @@ class RosbagInputSpec:
     def from_payload(cls, payload: Mapping[str, Any], *, base_dir: Path) -> "RosbagInputSpec":
         """Build from the config `input:` section; unknown keys are rejected."""
         expected = {"type", "rosbag", "calibration", "topics", "lidar", "synchronization", "fusion", "depth"}
-        optional = {"frame_limit"}
+        optional = {"frame_limit", "execution"}
         if not isinstance(payload, Mapping) or not expected <= set(payload) <= expected | optional:
             raise ValueError(
                 "input (rosbag2) must define: " + ", ".join(sorted(expected))
@@ -264,6 +270,7 @@ class RosbagInputSpec:
             fusion=FusionSpec(**dict(fusion)),
             depth=DepthSpec(**dict(payload["depth"])),
             frame_limit=payload.get("frame_limit"),
+            execution=str(payload.get("execution", EXECUTION_BATCH_V1)),
         )
 
 
@@ -277,6 +284,8 @@ def _resolve(value: Any, base_dir: Path) -> Path:
 __all__ = [
     "ADAPTER_TYPE",
     "DepthSpec",
+    "EXECUTION_BATCH_V1",
+    "EXECUTION_ONLINE_WINDOW_V2",
     "FusionSpec",
     "RosbagInputSpec",
     "SynchronizationSpec",

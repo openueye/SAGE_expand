@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 import re
 import sqlite3
+from collections import OrderedDict
+from collections.abc import Iterator
 
 from .decoder import (
     SUPPORTED_IMAGE_TYPES,
@@ -52,6 +54,16 @@ class MessageLocator:
     @property
     def message_id(self) -> str:
         return f"{self.shard_index:03d}-{self.row_id:09d}"
+
+
+@dataclass(frozen=True)
+class OnlineMessage:
+    """One declared-topic record as it appears in the bag's write order."""
+
+    role: str
+    locator: MessageLocator
+    payload: bytes
+    header: dict[str, object]
 
 
 def bag_shards(root: Path) -> tuple[Path, ...]:
@@ -268,6 +280,184 @@ class RosbagReader:
         self.close()
 
 
+class OnlineRosbagReader:
+    """Bounded-memory ROSBAG reader for an effective-time-monotonic bag.
+
+    Construction reads only bag metadata and topic tables.  ``events()`` then
+    performs the one permitted sequential message pass.  Unlike
+    :class:`RosbagReader`, this class never builds global image/LiDAR indexes
+    or an odometry track.  It rejects a bag whose effective header timeline is
+    not monotonic, because sorting it would turn the online mode back into a
+    global replay.
+    """
+
+    def __init__(
+        self,
+        rosbag_path: Path,
+        *,
+        topics: dict[str, str],
+        time_offsets_ns: dict[str, int],
+        payload_cache_messages: int = 12,
+    ) -> None:
+        root = Path(rosbag_path).resolve()
+        if not root.is_dir():
+            raise ValueError(f"ROS 2 bag folder does not exist: {root}")
+        if type(payload_cache_messages) is not int or payload_cache_messages < 1:
+            raise ValueError("payload_cache_messages must be a positive integer")
+        self.root = root
+        self.shards = bag_shards(root)
+        self.input_files = {
+            "metadata.yaml": root / "metadata.yaml",
+            **{f"rosbag/{path.name}": path for path in self.shards},
+        }
+        self._topics = dict(topics)
+        self._offsets = {
+            "image": 0,
+            **{
+                name: int(time_offsets_ns.get(name, 0))
+                for name in ("lidar", "odometry")
+            },
+        }
+        self._connections: dict[int, sqlite3.Connection] = {}
+        self._topic_ids_by_shard: dict[int, dict[int, str]] = {}
+        self.message_types: dict[str, str] = {}
+        self.topic_identities: dict[str, dict[str, object]] = {}
+        self._payload_cache_messages = payload_cache_messages
+        self._payload_cache: OrderedDict[MessageLocator, bytes] = OrderedDict()
+        self._events_started = False
+        try:
+            self._inspect_topics()
+        except BaseException:
+            self.close()
+            raise
+
+    def _connection(self, shard_index: int) -> sqlite3.Connection:
+        connection = self._connections.get(shard_index)
+        if connection is None:
+            connection = sqlite3.connect(str(self.shards[shard_index]))
+            self._connections[shard_index] = connection
+        return connection
+
+    def _inspect_topics(self) -> None:
+        for shard_index in range(len(self.shards)):
+            connection = self._connection(shard_index)
+            available = {
+                str(name): (int(topic_id), str(message_type), str(serialization))
+                for topic_id, name, message_type, serialization in connection.execute(
+                    "SELECT id, name, type, serialization_format FROM topics"
+                )
+            }
+            roles: dict[int, str] = {}
+            for role, topic in self._topics.items():
+                entry = available.get(topic)
+                if entry is None:
+                    continue
+                topic_id, message_type, serialization = entry
+                self._record_topic_identity(role, topic, message_type, serialization)
+                roles[topic_id] = role
+            self._topic_ids_by_shard[shard_index] = roles
+        for role, topic in self._topics.items():
+            if role not in self.topic_identities:
+                raise ValueError(f"Bag does not contain the declared {role} topic: {topic}")
+
+    def _record_topic_identity(
+        self, role: str, topic: str, message_type: str, serialization: str,
+    ) -> None:
+        supported = SUPPORTED_TYPES_BY_ROLE[role]
+        if message_type not in supported:
+            raise ValueError(
+                f"Unsupported {role} message type {message_type!r} on {topic}; supported: {supported}"
+            )
+        if serialization != "cdr":
+            raise ValueError(f"Unsupported serialization {serialization!r} on {topic}")
+        observed = {"name": topic, "type": message_type, "serialization": serialization}
+        existing = self.topic_identities.get(role)
+        if existing is not None and {
+            key: existing[key] for key in ("name", "type", "serialization")
+        } != observed:
+            raise ValueError(f"Topic identity changes across bag shards: {topic}")
+        self.topic_identities[role] = {**(existing or {}), **observed}
+        self.message_types[role] = message_type
+
+    def events(self) -> Iterator[OnlineMessage]:
+        """Yield all declared-topic events in one effective-time-ordered pass."""
+        if self._events_started:
+            raise RuntimeError("Online ROSBAG reader supports exactly one event pass")
+        self._events_started = True
+        previous_timestamp: int | None = None
+        try:
+            for shard_index in range(len(self.shards)):
+                roles = self._topic_ids_by_shard[shard_index]
+                if not roles:
+                    continue
+                connection = self._connection(shard_index)
+                placeholders = ", ".join("?" for _ in roles)
+                rows = connection.execute(
+                    "SELECT rowid, topic_id, data FROM messages "
+                    f"WHERE topic_id IN ({placeholders}) ORDER BY timestamp, rowid",
+                    tuple(roles),
+                )
+                for row_id, topic_id, blob in rows:
+                    role = roles[int(topic_id)]
+                    payload = bytes(blob)
+                    header = self._header(role, payload)
+                    stamp = header_timestamp_ns(header)
+                    effective_timestamp = stamp + self._offsets[role]
+                    if previous_timestamp is not None and effective_timestamp < previous_timestamp:
+                        raise ValueError(
+                            "online-window-v2 requires non-decreasing effective header timestamps "
+                            "in ROSBAG write order; use batch-v1 for an out-of-order bag"
+                        )
+                    previous_timestamp = effective_timestamp
+                    locator = MessageLocator(
+                        effective_timestamp, stamp, shard_index, int(topic_id), int(row_id),
+                    )
+                    self._cache_payload(locator, payload)
+                    yield OnlineMessage(role, locator, payload, header)
+        finally:
+            self.close()
+
+    def _header(self, role: str, payload: bytes) -> dict[str, object]:
+        if role == "odometry":
+            return parse_odometry(payload)
+        if role == "lidar":
+            return parse_pointcloud2_prefix(payload[:_CLOUD_PREFIX_BYTES])
+        return parse_header(payload[:_IMAGE_PREFIX_BYTES])
+
+    def _cache_payload(self, locator: MessageLocator, payload: bytes) -> None:
+        self._payload_cache[locator] = payload
+        self._payload_cache.move_to_end(locator)
+        while len(self._payload_cache) > self._payload_cache_messages:
+            self._payload_cache.popitem(last=False)
+
+    def payload(self, locator: MessageLocator) -> bytes:
+        cached = self._payload_cache.get(locator)
+        if cached is not None:
+            self._payload_cache.move_to_end(locator)
+            return cached
+        row = self._connection(locator.shard_index).execute(
+            "SELECT data FROM messages WHERE topic_id = ? AND rowid = ?",
+            (locator.topic_id, locator.row_id),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"ROSBAG row disappeared: {locator.message_id}")
+        payload = bytes(row[0])
+        self._cache_payload(locator, payload)
+        return payload
+
+    def close(self) -> None:
+        for connection in self._connections.values():
+            connection.close()
+        self._connections.clear()
+        self._payload_cache.clear()
+
+    def __enter__(self) -> "OnlineRosbagReader":
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.close()
+
+
 def _ordered(events: list[MessageLocator], topic: str) -> tuple[MessageLocator, ...]:
     if not events:
         raise ValueError(f"Topic carries no messages: {topic}")
@@ -276,4 +466,4 @@ def _ordered(events: list[MessageLocator], topic: str) -> tuple[MessageLocator, 
     )))
 
 
-__all__ = ["MessageLocator", "RosbagReader", "bag_shards"]
+__all__ = ["MessageLocator", "OnlineMessage", "OnlineRosbagReader", "RosbagReader", "bag_shards"]

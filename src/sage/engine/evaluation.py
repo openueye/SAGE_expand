@@ -343,27 +343,41 @@ def evaluate_frames(
     for frame in frames:
         if frame.index != 0 and (frame.index + 1) % map_every != 0:
             continue
-        output = renderer(model, frame)
-        image = image_metrics(
-            output.rgb,
-            torch.as_tensor(frame.rgb, dtype=torch.float32, device=output.rgb.device),
-        )
-        frame_reports.append({
-            "index": frame.index,
-            "stem": frame.stem,
-            "image": {
-                "psnr": float(getattr(image, "psnr")),
-                "ssim": float(getattr(image, "ssim")),
-                "lpips": float(getattr(image, "lpips")),
-            },
-            "geometry": evaluate_render_output(output, frame.mapping, policy=policy),
-        })
+        frame_reports.append(evaluate_frame(
+            model, frame, renderer=renderer, image_metrics=image_metrics, policy=policy,
+        ))
         if progress_callback is not None:
             progress_callback(len(frame_reports), frame)
     return aggregate_evaluation_frame_reports(
         frame_reports,
         policy=policy,
     )
+
+
+def evaluate_frame(
+    model: object,
+    frame: MappingFrame,
+    *,
+    renderer: Callable[[object, MappingFrame], RenderOutput],
+    image_metrics: Callable[[torch.Tensor, torch.Tensor], object],
+    policy: EvaluationDepthPolicy,
+) -> dict[str, Any]:
+    """Evaluate one already-selected frame for one checkpoint."""
+    output = renderer(model, frame)
+    image = image_metrics(
+        output.rgb,
+        torch.as_tensor(frame.rgb, dtype=torch.float32, device=output.rgb.device),
+    )
+    return {
+        "index": frame.index,
+        "stem": frame.stem,
+        "image": {
+            "psnr": float(getattr(image, "psnr")),
+            "ssim": float(getattr(image, "ssim")),
+            "lpips": float(getattr(image, "lpips")),
+        },
+        "geometry": evaluate_render_output(output, frame.mapping, policy=policy),
+    }
 
 
 def aggregate_evaluation_frame_reports(
@@ -396,6 +410,7 @@ __all__ = [
     "EVALUATION_SCHEMA_VERSION",
     "EvaluationDepthPolicy",
     "aggregate_evaluation_frame_reports",
+    "evaluate_frame",
     "evaluate_frames",
     "evaluate_render_output",
 ]

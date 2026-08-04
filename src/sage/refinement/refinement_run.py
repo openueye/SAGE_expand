@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from copy import deepcopy
 from dataclasses import asdict
 import json
@@ -60,7 +61,14 @@ from .dense_geometry_objective import (
     dense_prior_support_counts,
     prepare_dense_normal_static,
 )
-from .dense_geometry_prior import prepare_dense_priors
+from .dense_geometry_prior import build_dense_geometry_prior
+from .stage2_cache import (
+    Stage2DensePriorCache,
+    Stage2DensePriorCacheWriter,
+    Stage2InputCache,
+    default_stage2_cache_path,
+    remove_stage2_dense_prior_cache,
+)
 
 
 APPEARANCE_RUN_SCHEMA = "sage-refinement-run-v1"
@@ -72,6 +80,21 @@ _TOPOLOGY_TENSORS = (
     "source_types",
     "source_confidences",
 )
+_STAGE2_CPU_LRU_FRAMES = 4
+_STAGE2_GPU_LRU_FRAMES = 2
+
+
+class _MemoryMappingFrames:
+    """Legacy fallback retaining the historical in-memory refinement input."""
+
+    def __init__(self, frames: tuple[MappingFrame, ...]) -> None:
+        if not frames:
+            raise ValueError("Appearance refinement requires mapping frames")
+        self._frames = {frame.index: frame for frame in frames}
+        self.frame_indices = tuple(self._frames)
+
+    def load(self, frame_index: int) -> MappingFrame:
+        return self._frames[frame_index]
 
 
 def _format_duration(seconds: float) -> str:
@@ -229,22 +252,19 @@ def _appearance_objective_from_render(
 
 
 def _dense_prior_record(
-    frames: tuple[MappingFrame, ...],
-    priors: dict[int, DenseGeometryPrior],
+    frame_indices: tuple[int, ...],
+    load_frame,
+    load_prior,
     *,
     provider_identity: dict[str, object],
     alignment_variant: str | None = None,
     max_relative_depth_jump: float | None = None,
     prediction_cache: dict[str, object] | None = None,
 ) -> dict[str, object]:
-    frame_indices = [frame.index for frame in frames]
-    if set(priors) != set(frame_indices):
-        raise ValueError(
-            "Dense prior frames must exactly match appearance mapping frames"
-        )
     records = []
-    for frame in frames:
-        prior = priors[frame.index]
+    for frame_index in frame_indices:
+        frame = load_frame(frame_index)
+        prior = load_prior(frame_index)
         valid_depth, valid_normals = dense_prior_support_counts(
             prior,
             frame.intrinsics,
@@ -371,10 +391,34 @@ def appearance_checkpoint_payload(
 def _consume_mapping_frames(
     config: SageConfig,
     checkpoint_identity: dict[str, object],
-) -> tuple[tuple[object, ...], dict[str, object]]:
-    """Replay the canonical input and keep only the frames mapping committed."""
+) -> tuple[Stage2InputCache | _MemoryMappingFrames, dict[str, object]]:
+    """Load Stage 1's mapping cohort without replaying a ROSBAG.
+
+    New mapping runs always publish the transient cache beside their structure
+    output.  A legacy direct refinement invocation may still fall back to its
+    historical adapter pass; online-window-v2 rejects that fallback because it
+    is single-use by contract.
+    """
+    cache_path = default_stage2_cache_path(config.output_dir)
+    if cache_path.is_dir():
+        cache = Stage2InputCache(cache_path, cpu_lru_frames=_STAGE2_CPU_LRU_FRAMES)
+        cache.validate_checkpoint_identity(checkpoint_identity)
+        return cache, {
+            "adapter_type": "stage2_transient_cache",
+            "identities": cache.input_identities.payload(),
+            "accepted_frames": len(cache.frame_indices),
+            "cache": {
+                "path": str(cache_path),
+                "schema_version": "sage-stage2-input-cache-v1",
+                "cpu_lru_frames": _STAGE2_CPU_LRU_FRAMES,
+            },
+        }
+    if config.input.payload.get("execution") == "online-window-v2":
+        raise ValueError(
+            "online-window-v2 refinement requires the Stage 1 transient input cache; "
+            "it will not replay a ROSBAG"
+        )
     resolved = config.input.create_adapter().preflight()
-    validate_dataset_identity(checkpoint_identity, resolved.identities)
     assembler = CoreObservationAssembler(resolved.contract.canonical.sources)
     frames = tuple(
         frame
@@ -383,7 +427,11 @@ def _consume_mapping_frames(
     )
     if not frames:
         raise ValueError("Input emitted no mapping frames for appearance refinement")
-    return frames, {
+    # The completed frame pass settled the canonical sequence identity.  Doing
+    # this validation before the pass would consume the ROS bag once merely to
+    # calculate that identity, then consume it again to build refinement data.
+    validate_dataset_identity(checkpoint_identity, resolved.identities)
+    return _MemoryMappingFrames(frames), {
         "adapter_type": resolved.contract.adapter_type,
         "identities": resolved.identities.payload(),
         "accepted_frames": resolved.report.accepted_frames,
@@ -479,12 +527,14 @@ def run_appearance_refinement(
     started = perf_counter()
     producer_code = repository_code_identity()
     source_sha256 = sha256_file(source_checkpoint)
+    dense_prior_writer: Stage2DensePriorCacheWriter | None = None
     try:
         checkpoint_identity = source_payload["identity_snapshot"]
         mapping_frames, training_input = _consume_mapping_frames(
             config,
             checkpoint_identity,
         )
+        frame_indices = mapping_frames.frame_indices
         provider = OnlineSPNetProvider(
             config.growth_sources.spnet,
             device=device,
@@ -518,19 +568,48 @@ def run_appearance_refinement(
                 )
 
         print(
-            f"SAGE dense priors: preparing {len(mapping_frames)} mapping frames",
+            f"SAGE dense priors: preparing {len(frame_indices)} mapping frames",
             flush=True,
         )
-        dense_priors = prepare_dense_priors(
-            mapping_frames,
-            dense_provider,
-            refinement.dense_prior,
-            progress_callback=report_dense_prior,
-        )
+        if isinstance(mapping_frames, Stage2InputCache):
+            # A hard interruption can leave only this derived cache published.
+            # It is not a Stage 2 artifact and must not block an idempotent
+            # retry against the preserved input handoff.
+            remove_stage2_dense_prior_cache(mapping_frames)
+            dense_prior_writer = Stage2DensePriorCacheWriter(mapping_frames)
+            for completed, frame_index in enumerate(frame_indices, start=1):
+                frame = mapping_frames.load(frame_index)
+                dense_prior_writer.write(
+                    frame_index,
+                    build_dense_geometry_prior(
+                        dense_provider.dense_evidence_for(frame),
+                        frame.mapping,
+                        refinement.dense_prior,
+                    ),
+                )
+                report_dense_prior(completed, len(frame_indices), frame)
+            dense_prior_writer.finalize()
+            dense_priors = Stage2DensePriorCache(
+                mapping_frames,
+                cpu_lru_frames=_STAGE2_CPU_LRU_FRAMES,
+            )
+            load_prior = dense_priors.load
+        else:
+            dense_priors_by_frame = {}
+            for completed, frame_index in enumerate(frame_indices, start=1):
+                frame = mapping_frames.load(frame_index)
+                dense_priors_by_frame[frame_index] = build_dense_geometry_prior(
+                    dense_provider.dense_evidence_for(frame),
+                    frame.mapping,
+                    refinement.dense_prior,
+                )
+                report_dense_prior(completed, len(frame_indices), frame)
+            load_prior = dense_priors_by_frame.__getitem__
         dense_prior_seconds = perf_counter() - dense_prior_started
         dense_prior_provenance = _dense_prior_record(
-            mapping_frames,
-            dense_priors,
+            frame_indices,
+            mapping_frames.load,
+            load_prior,
             provider_identity=dense_provider.identity.payload(),
             alignment_variant=refinement.dense_prior.alignment_variant,
             max_relative_depth_jump=(
@@ -549,12 +628,8 @@ def run_appearance_refinement(
         )
         del dense_provider, provider
         torch.cuda.empty_cache()
-        frame_by_index = {
-            frame.index: frame
-            for frame in mapping_frames
-        }
         exposure_nuisance = AppearanceExposureNuisance(
-            tuple(frame_by_index),
+            frame_indices,
             refinement,
             device=device,
         )
@@ -580,8 +655,14 @@ def run_appearance_refinement(
                 refinement.dense_normal_max_relative_depth_jump
             ),
         )
-        appearance_cache: dict[int, dict[str, object]] = {}
-        for frame in mapping_frames:
+        appearance_cache: OrderedDict[int, dict[str, object]] = OrderedDict()
+
+        def appearance_targets(frame_index: int) -> dict[str, object]:
+            cached = appearance_cache.get(frame_index)
+            if cached is not None:
+                appearance_cache.move_to_end(frame_index)
+                return cached
+            frame = mapping_frames.load(frame_index)
             target_rgb = torch.as_tensor(
                 frame.rgb,
                 dtype=torch.float32,
@@ -592,7 +673,7 @@ def run_appearance_refinement(
                 dtype=torch.uint8,
                 device=device,
             )
-            appearance_cache[frame.index] = {
+            cached = {
                 "target_rgb": target_rgb,
                 "target_depth": torch.as_tensor(
                     frame.mapping.depth_m,
@@ -604,20 +685,24 @@ def run_appearance_refinement(
                     "fused": source_types == int(SourceType.LIDAR_FUSED),
                 },
                 "dense_normal_static": prepare_dense_normal_static(
-                    dense_priors[frame.index],
+                    load_prior(frame_index),
                     target_rgb,
                     frame.intrinsics,
                     refinement.dense_prior,
                     dense_policy,
                 ),
             }
+            appearance_cache[frame_index] = cached
+            while len(appearance_cache) > _STAGE2_GPU_LRU_FRAMES:
+                appearance_cache.popitem(last=False)
+            return cached
 
         def objective(
             item: TrainableGaussians,
             frame_index: int,
             _step: int,
         ) -> torch.Tensor | AppearanceObjective:
-            frame = frame_by_index[frame_index]
+            frame = mapping_frames.load(frame_index)
             output = renderer(item, frame, static=render_static)
             photometric_rgb = (
                 exposure_nuisance.apply(output.rgb, frame_index)
@@ -631,7 +716,7 @@ def run_appearance_refinement(
                 config.loss,
                 dense_policy=dense_policy,
                 photometric_rgb=photometric_rgb,
-                cached=appearance_cache[frame_index],
+                cached=appearance_targets(frame_index),
             )
 
         refinement_started = perf_counter()
@@ -660,7 +745,7 @@ def run_appearance_refinement(
         )
         result = AppearanceRefiner(refinement).optimize(
             model,
-            tuple(frame_by_index),
+            frame_indices,
             objective,
             exposure_nuisance=exposure_nuisance,
             progress_every=_REFINEMENT_PROGRESS_EVERY,
@@ -712,7 +797,7 @@ def run_appearance_refinement(
                 "sha256": refinement_sha256,
                 "payload": refinement.payload(),
             },
-            "mapping_frame_indices": list(frame_by_index),
+            "mapping_frame_indices": list(frame_indices),
             "selected_frame_indices": list(result.selected_frame_indices),
             "optimizer_steps": list(result.steps),
             "milestones": list(result.milestones),
@@ -747,6 +832,8 @@ def run_appearance_refinement(
             raise RuntimeError("Appearance base config changed during refinement")
         staging.rename(destination)
     except BaseException:
+        if dense_prior_writer is not None:
+            dense_prior_writer.abort()
         shutil.rmtree(staging, ignore_errors=True)
         raise
     return destination

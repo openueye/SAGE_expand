@@ -47,6 +47,12 @@ _ROOT_FIELDS = {
 }
 _OPTIONAL_ROOT_FIELDS = {"runtime"}
 _RUNTIME_FIELDS = {"model_root", "require_clean_worktree", "prefetch_depth"}
+_EVALUATION_FIELDS = {
+    "min_alpha", "epsilon", "alpha_support", "hit_target_center", "hit_target_fused",
+}
+_EVALUATION_OPTIONAL_FIELDS = {"checkpoint_stages"}
+_DEFAULT_EVALUATION_CHECKPOINT_STAGES = ("stage2_refinement",)
+_EVALUATION_CHECKPOINT_STAGES = {"stage1_mapping", "stage2_refinement"}
 
 
 def _section(
@@ -88,6 +94,19 @@ def _runtime_section(payload: dict[str, Any]) -> dict[str, Any]:
             + ", ".join(sorted(_RUNTIME_FIELDS))
         )
     return value
+
+
+def _evaluation_section(payload: dict[str, Any]) -> dict[str, Any]:
+    value = payload.get("evaluation")
+    if (
+        not isinstance(value, dict)
+        or not _EVALUATION_FIELDS <= set(value) <= _EVALUATION_FIELDS | _EVALUATION_OPTIONAL_FIELDS
+    ):
+        raise ValueError(
+            "SAGE evaluation must define: " + ", ".join(sorted(_EVALUATION_FIELDS))
+            + "; optional fields: checkpoint_stages"
+        )
+    return dict(value)
 
 
 @dataclass(frozen=True)
@@ -175,17 +194,7 @@ class SageMethodConfig:
                 "rotations_learning_rate",
             },
         )
-        evaluation = _section(
-            payload,
-            "evaluation",
-            {
-                "min_alpha",
-                "epsilon",
-                "alpha_support",
-                "hit_target_center",
-                "hit_target_fused",
-            },
-        )
+        evaluation = _evaluation_section(payload)
         runtime = _runtime_section(payload)
         config = cls(
             path=source,
@@ -204,6 +213,7 @@ class SageMethodConfig:
         self.runtime_model_root()
         self.runtime_require_clean_worktree()
         self.refinement_config()
+        self.evaluation_checkpoint_stages()
         self._structure_parts()
 
     def runtime_model_root(self) -> Path | None:
@@ -222,6 +232,20 @@ class SageMethodConfig:
         if type(value) is not bool:
             raise ValueError("SAGE runtime.require_clean_worktree must be a boolean")
         return value
+
+    def evaluation_checkpoint_stages(self) -> tuple[str, ...]:
+        value = self.evaluation.get("checkpoint_stages", _DEFAULT_EVALUATION_CHECKPOINT_STAGES)
+        if (
+            not isinstance(value, (list, tuple))
+            or not value
+            or len(set(value)) != len(value)
+            or any(not isinstance(stage, str) or stage not in _EVALUATION_CHECKPOINT_STAGES for stage in value)
+        ):
+            raise ValueError(
+                "evaluation.checkpoint_stages must be a non-empty unique list of "
+                "stage1_mapping and/or stage2_refinement"
+            )
+        return tuple(value)
 
     def _structure_parts(self) -> dict[str, object]:
         growth = _section_with_optional(

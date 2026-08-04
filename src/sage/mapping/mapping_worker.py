@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import replace
 import json
 import os
 from pathlib import Path
@@ -16,6 +15,7 @@ import torch
 from ..core_input import CoreObservationAssembler
 from ..data.providers.spnet import OnlineSPNetProvider, SPNetEvidenceProvider
 from ..engine.metrics import ImageMetricEvaluator
+from ..engine.geometry import is_mapping_frame
 from ..engine.model import TrainableGaussians
 from ..engine.rendering import CachedRenderer, capture_renderer_identity
 from ..execution import (
@@ -25,6 +25,11 @@ from ..execution import (
 )
 from ..foundation.config import SageConfig
 from ..input.prefetch import BoundedResultStream
+from ..refinement.stage2_cache import (
+    Stage2InputCacheWriter,
+    default_stage2_cache_path,
+    remove_stage2_cache,
+)
 from ..foundation.hashing import sha256_file
 from ..foundation.identity_schema import DependencyIdentity
 from .mapper import MappingEngine
@@ -47,14 +52,14 @@ def _format_elapsed(elapsed: float) -> str:
 def _report_frames(
     frames,
     *,
-    expected_total: int,
+    expected_total: int | None,
     mapping_started_at: float,
 ):
     for completed, frame in enumerate(frames, start=1):
         if (
             completed == 1
             or completed % _MAPPING_PROGRESS_EVERY == 0
-            or (expected_total > 0 and completed == expected_total)
+            or (expected_total is not None and completed == expected_total)
         ):
             elapsed = perf_counter() - mapping_started_at
             print(
@@ -127,13 +132,10 @@ def train(
         spnet_provider,
         actual_spnet_invocations=0,
     )
-    input_identity = RunInputIdentity.capture(
-        config,
-        dependencies=dependencies,
-        resolved=resolved,
-        require_clean=require_clean,
-    )
     expected_frames = resolved.contract.canonical.frame_count
+    stage2_cache_path = default_stage2_cache_path(config.output_dir)
+    stage2_cache = Stage2InputCacheWriter(stage2_cache_path)
+    stage2_cache_published = False
     mapping_started_at = perf_counter()
     torch.cuda.synchronize(device)
     torch.cuda.reset_peak_memory_stats(device)
@@ -146,6 +148,13 @@ def train(
         queue_capacity=config.input.prefetch_depth,
     )
     runtime_metrics: dict[str, object] = {}
+
+    def cache_mapping_frames(frames):
+        for frame in frames:
+            if is_mapping_frame(frame.index, map_every=config.mapping.map_every):
+                stage2_cache.write(frame)
+            yield frame
+
     try:
         result = MappingEngine(
             config.mapping, config.pruning, config.growth,
@@ -156,7 +165,7 @@ def train(
             seed=config.seed,
         ).run(
             _report_frames(
-                stream.frames(),
+                cache_mapping_frames(stream.frames()),
                 expected_total=expected_frames,
                 mapping_started_at=mapping_started_at,
             )
@@ -165,15 +174,24 @@ def train(
         torch.cuda.synchronize(device)
         if result.spnet_actual_invocations != result.spnet_expected_invocations:
             raise RuntimeError("SPNet invocation count changed during SAGE training")
-        input_identity = replace(
-            input_identity,
+        input_identity = RunInputIdentity.capture(
+            config,
             dependencies=_dependency_identity(
                 renderer_identity,
                 metric_evaluator.identity,
                 spnet_provider,
                 actual_spnet_invocations=result.spnet_actual_invocations,
             ),
+            resolved=resolved,
+            require_clean=require_clean,
         )
+        stage2_cache.finalize(input_identity.input_identities)
+        stage2_cache_published = True
+        runtime_metrics["stage2_input_cache"] = {
+            "path": str(stage2_cache_path),
+            "mapping_frame_count": stage2_cache.mapping_frame_count,
+            "lifecycle": "transient-until-stage2-publication",
+        }
         runtime_metrics["peak_cuda_memory_bytes"] = int(torch.cuda.max_memory_allocated(device))
         artifacts = write_run_artifacts(
             config,
@@ -185,11 +203,20 @@ def train(
         return artifacts.run_dir
     except BaseException:
         stream.abort("SAGE mapping failed")
+        stage2_cache.abort()
+        if stage2_cache_published:
+            remove_stage2_cache(stage2_cache_path)
         raise
 
 
 def _input_identity_payload(config: SageConfig) -> dict[str, object]:
     resolved = config.input.create_adapter().preflight()
+    # Explicit training preflight is allowed to consume the configured input.
+    # In online-window-v2 this is the only way to settle its EOF identity; the
+    # normal mapping path instead settles it while it trains.
+    if resolved.contract.canonical.frame_count is None:
+        for _ in resolved.frames():
+            pass
     return {
         "contract": resolved.contract.payload(),
         "preflight": resolved.report.payload(),

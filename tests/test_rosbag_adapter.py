@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from sage.input.rosbag import GenericRosbagAdapter
+from sage.input.rosbag.online_adapter import OnlineRosbagAdapter
 from sage.input.rosbag.calibration import ImageRectifier, load_calibration
 from sage.input.rosbag.decoder import (
     decode_image_message,
@@ -13,7 +14,7 @@ from sage.input.rosbag.decoder import (
     parse_pointcloud2,
 )
 from sage.input.rosbag.projection import project_to_depth
-from sage.input.rosbag.reader import MessageLocator, RosbagReader
+from sage.input.rosbag.reader import MessageLocator, OnlineRosbagReader, RosbagReader
 from sage.input.rosbag.spec import FusionSpec, SynchronizationSpec
 from sage.input.rosbag.synchronizer import _associate_lidar
 from sage.input.rosbag.transforms import (
@@ -106,6 +107,24 @@ def test_association_outside_the_skew_budget_is_rejected() -> None:
     assert _associate_lidar(
         events, [10], 100, policy="nearest_to_anchor", max_skew_ns=50,
     ) is None
+
+
+def test_online_reader_exposes_static_topics_then_one_ordered_event_pass(tmp_path) -> None:
+    spec = synthetic_input(tmp_path)
+    reader = OnlineRosbagReader(
+        spec.rosbag_path,
+        topics=spec.topic_roles(),
+        time_offsets_ns={"lidar": 0, "odometry": 0},
+        payload_cache_messages=2,
+    )
+    assert set(reader.message_types) == {"image", "lidar", "odometry"}
+    events = list(reader.events())
+    assert {event.role for event in events} == {"image", "lidar", "odometry"}
+    assert [event.locator.effective_timestamp_ns for event in events] == sorted(
+        event.locator.effective_timestamp_ns for event in events
+    )
+    with pytest.raises(RuntimeError, match="exactly one"):
+        list(reader.events())
 
 
 # -- transforms -------------------------------------------------------------
@@ -258,6 +277,89 @@ def test_preflight_freezes_accepted_frames_and_reports_rejections(tmp_path) -> N
     }
     assert canonical.fusion["causal"] is False
     assert canonical.sources == ("LIDAR_CENTER", "LIDAR_FUSED")
+
+
+def test_online_adapter_maps_during_its_only_bag_pass_and_freezes_at_eof(tmp_path) -> None:
+    from dataclasses import replace
+
+    spec = replace(synthetic_input(tmp_path), execution="online-window-v2")
+    resolved = OnlineRosbagAdapter(spec).preflight()
+
+    assert resolved.contract.canonical.frame_count is None
+    assert "pending (online stream)" in "\n".join(resolved.summary_lines())
+    with pytest.raises(RuntimeError, match="only after"):
+        _ = resolved.identities
+
+    frames = list(resolved.frames())
+
+    assert len(frames) == fixtures.FRAME_COUNT - 4
+    assert [frame.frame_index for frame in frames] == list(range(len(frames)))
+    assert resolved.contract.canonical.frame_count == len(frames)
+    assert resolved.report.accepted_frames == len(frames)
+    assert {frame.reason for frame in resolved.report.rejected_frames} == {
+        "incomplete-fusion-window",
+    }
+    assert len(resolved.identities.canonical_sequence_identity) == 64
+    with pytest.raises(RuntimeError, match="already consumed"):
+        list(resolved.frames())
+
+
+def test_online_adapter_matches_the_batch_canonical_frames(tmp_path) -> None:
+    from dataclasses import replace
+
+    batch = GenericRosbagAdapter(synthetic_input(tmp_path)).preflight()
+    online = OnlineRosbagAdapter(
+        replace(synthetic_input(tmp_path / "online"), execution="online-window-v2")
+    ).preflight()
+
+    batch_frames = list(batch.frames())
+    online_frames = list(online.frames())
+
+    assert len(online_frames) == len(batch_frames)
+    for actual, expected in zip(online_frames, batch_frames):
+        assert actual.frame_index == expected.frame_index
+        assert actual.timestamp_ns == expected.timestamp_ns
+        np.testing.assert_allclose(actual.image_rgb, expected.image_rgb)
+        np.testing.assert_allclose(actual.reference_from_camera, expected.reference_from_camera)
+        np.testing.assert_allclose(actual.lidar_center.depth_m, expected.lidar_center.depth_m)
+        np.testing.assert_array_equal(actual.lidar_center.valid_mask, expected.lidar_center.valid_mask)
+        assert actual.lidar_fused is not None and expected.lidar_fused is not None
+        np.testing.assert_allclose(actual.lidar_fused.depth_m, expected.lidar_fused.depth_m)
+
+
+def test_online_associated_state_discards_past_fusion_candidates(tmp_path) -> None:
+    from dataclasses import replace
+
+    spec = replace(synthetic_input(tmp_path), execution="online-window-v2")
+    associated = {index: None for index in range(12)}
+
+    OnlineRosbagAdapter._trim_associated(
+        associated,
+        next_window_center=7,
+        spec=spec,
+    )
+
+    # With a centered five-frame window, a later center can only still need
+    # the two immediate predecessors.  Old locators must not grow unbounded.
+    assert tuple(associated) == tuple(range(5, 12))
+
+
+def test_summary_lines_does_not_replay_canonical_frames(tmp_path) -> None:
+    resolved = GenericRosbagAdapter(synthetic_input(tmp_path)).preflight()
+    original_frames = resolved._frames
+    replay_calls = 0
+
+    def counted_frames():
+        nonlocal replay_calls
+        replay_calls += 1
+        yield from original_frames()
+
+    resolved._frames = counted_frames
+
+    summary = resolved.summary_lines()
+
+    assert replay_calls == 0
+    assert not any("Canonical sequence identity:" in line for line in summary)
 
 
 def test_rosbag_payload_uses_code_defaults_for_fixed_policies(tmp_path) -> None:

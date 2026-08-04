@@ -7,8 +7,9 @@ runtime:
 
 input:
   type: rosbag2
-  rosbag: /home/DL/Projects/02_Thesis/03_Datasets/001_Odin/Ferrari1
-  calibration: /home/DL/Projects/02_Thesis/03_Datasets/001_Odin/calibration.yaml
+  execution: online-window-v2
+  rosbag: /home/haibo/Documents/Thesis/03_Datasets/001_Odin/Ferrari1
+  calibration: /home/haibo/Documents/Thesis/03_Datasets/001_Odin/calibration.yaml
   topics:
     lidar: /odin1/cloud_slam
     image: /odin1/image/compressed

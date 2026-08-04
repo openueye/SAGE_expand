@@ -10,13 +10,19 @@ import pytest
 from sage.core_input import CoreObservationAssembler
 from sage.foundation.contracts import INVALID_SOURCE_TYPE, SourceType
 from sage.foundation.source_policy import descriptor_for_type
-from sage.input.contract import CanonicalInputContract, ResolvedInputContract
+from sage.input.adapter import StreamingResolvedInput
+from sage.input.contract import (
+    ONLINE_CANONICAL_CONTRACT_REVISION,
+    CanonicalInputContract,
+    ResolvedInputContract,
+)
 from sage.input.frame import DepthObservation, FrameInputs, FrameMetadata
 from sage.input.identity import (
     CanonicalSequenceDigest,
     InputIdentities,
     validate_core_identity_match,
 )
+from sage.input.preflight import PreflightReport
 
 from helpers import canonical_frame, intrinsics_matrix
 
@@ -130,6 +136,92 @@ def test_canonical_contract_rejects_a_foreign_schema() -> None:
     payload = {**_contract().payload(), "schema_name": "legacy_scene"}
     with pytest.raises(ValueError, match="Unsupported canonical input contract schema"):
         CanonicalInputContract.from_payload(payload)
+
+
+def test_online_contract_may_defer_frame_count_but_v1_cannot() -> None:
+    with pytest.raises(ValueError, match="Only the online"):
+        CanonicalInputContract(
+            frame_count=None,
+            reference_frame="odom",
+            camera_frame="camera",
+            image_size=(2, 2),
+            sources=("LIDAR_CENTER",),
+            fusion={"policy": "centered_window", "causal": False},
+        )
+    online = CanonicalInputContract(
+        frame_count=None,
+        reference_frame="odom",
+        camera_frame="camera",
+        image_size=(2, 2),
+        sources=("LIDAR_CENTER",),
+        fusion={"policy": "centered_window", "causal": False},
+        schema_revision=ONLINE_CANONICAL_CONTRACT_REVISION,
+    )
+    assert CanonicalInputContract.from_payload(online.payload()) == online
+
+
+def test_streaming_input_finalizes_identity_at_eof_without_replay() -> None:
+    provisional = CanonicalInputContract(
+        frame_count=None,
+        reference_frame="odom",
+        camera_frame="camera",
+        image_size=(2, 2),
+        sources=("LIDAR_CENTER",),
+        fusion={"policy": "centered_window", "causal": False},
+        schema_revision=ONLINE_CANONICAL_CONTRACT_REVISION,
+    )
+    contract = ResolvedInputContract(
+        adapter_type="rosbag2-online-window-v2",
+        canonical=provisional,
+        adapter_details={"adapter_type": "rosbag2-online-window-v2"},
+    )
+    source = [
+        canonical_frame(
+            frame_index=index,
+            timestamp_ns=index,
+            rgb=np.full((2, 2, 3), 0.5, dtype=np.float32),
+            intrinsics=intrinsics_matrix(1.0, 1.0, 1.0, 1.0),
+        )
+        for index in range(2)
+    ]
+    calls = 0
+
+    def frames():
+        nonlocal calls
+        calls += 1
+        yield from source
+
+    def final_contract(frame_count: int) -> ResolvedInputContract:
+        return ResolvedInputContract(
+            adapter_type=contract.adapter_type,
+            canonical=CanonicalInputContract(
+                frame_count=frame_count,
+                reference_frame=provisional.reference_frame,
+                camera_frame=provisional.camera_frame,
+                image_size=provisional.image_size,
+                sources=provisional.sources,
+                fusion=provisional.fusion,
+                schema_revision=ONLINE_CANONICAL_CONTRACT_REVISION,
+            ),
+            adapter_details=contract.adapter_details,
+        )
+
+    resolved = StreamingResolvedInput(
+        contract=contract,
+        report=PreflightReport("rosbag2-online-window-v2"),
+        source_identity="0" * 64,
+        _frames=frames,
+        _finalize_contract=final_contract,
+    )
+    with pytest.raises(RuntimeError, match="only after"):
+        _ = resolved.identities
+    assert list(resolved.frames()) == source
+    assert calls == 1
+    assert resolved.contract.canonical.frame_count == 2
+    assert resolved.contract.canonical_contract_identity == contract.canonical_contract_identity
+    assert len(resolved.identities.canonical_sequence_identity) == 64
+    with pytest.raises(RuntimeError, match="already consumed"):
+        list(resolved.frames())
 
 
 def test_contract_identity_separates_canonical_from_provenance() -> None:
@@ -246,4 +338,26 @@ def test_training_identity_tracks_training_parameters(tmp_path) -> None:
     assert (
         first.resolve(tmp_path / "out").training_config_identity()
         != changed.resolve(tmp_path / "out").training_config_identity()
+    )
+
+
+def test_evaluation_checkpoint_stages_default_and_explicit_yaml_policy(tmp_path) -> None:
+    import yaml
+
+    base_path = Path(__file__).resolve().parents[1] / "configs" / "sage.yaml"
+    payload = yaml.safe_load(base_path.read_text(encoding="utf-8"))
+    default_path = tmp_path / "default.yaml"
+    default_path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+    from sage.method_config import SageMethodConfig
+
+    assert SageMethodConfig.load(default_path).evaluation_checkpoint_stages() == (
+        "stage2_refinement",
+    )
+    payload["evaluation"]["checkpoint_stages"] = [
+        "stage1_mapping", "stage2_refinement",
+    ]
+    explicit_path = tmp_path / "both.yaml"
+    explicit_path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+    assert SageMethodConfig.load(explicit_path).evaluation_checkpoint_stages() == (
+        "stage1_mapping", "stage2_refinement",
     )
