@@ -65,16 +65,12 @@ def _spatially_blocked(
     query_points: torch.Tensor,
     reference_points: torch.Tensor,
     threshold_m: float,
-    *,
-    prior_query_only: bool = False,
 ) -> torch.Tensor:
     """Return queries within ``threshold_m`` of a reference point.
 
     A voxel grid only narrows the search. The final Euclidean distance check
     avoids both false positives inside one voxel and false negatives across a
-    voxel boundary. ``prior_query_only`` makes the reference set the same
-    candidate array while retaining only earlier candidates, preserving the
-    explicit source-priority order supplied by the caller.
+    voxel boundary.
     """
     query_count = int(query_points.shape[0])
     reference_count = int(reference_points.shape[0])
@@ -128,14 +124,6 @@ def _spatially_blocked(
         )
         reference_indices = reference_order[pair_starts + local_offsets]
         query_indices = pair_neighbor_ids // neighbor_cell_ids.shape[1]
-        if prior_query_only:
-            valid_pairs = reference_indices < (query_indices + start)
-        else:
-            valid_pairs = torch.ones_like(reference_indices, dtype=torch.bool)
-        if not bool(valid_pairs.any()):
-            continue
-        query_indices = query_indices[valid_pairs]
-        reference_indices = reference_indices[valid_pairs]
         distances_squared = (
             query_points[start + query_indices] - reference_points[reference_indices]
         ).square().sum(dim=1)
@@ -153,6 +141,34 @@ def _spatially_blocked(
             )
             blocked[start:end] = blocked_chunk.to(torch.bool)
     return blocked
+
+
+def _voxel_duplicates_after_first(
+    points: torch.Tensor,
+    voxel_size_m: float,
+) -> torch.Tensor:
+    """Return later candidates that share a quantized voxel with an earlier one.
+
+    Candidate order is source-priority followed by raster order. Retaining the
+    first row per voxel therefore preserves the growth arbitration order
+    without materializing candidate pairs.
+    """
+    point_count = int(points.shape[0])
+    duplicates = torch.zeros(point_count, dtype=torch.bool, device=points.device)
+    if point_count == 0:
+        return duplicates
+
+    voxels = torch.floor(points / voxel_size_m).to(torch.int64)
+    _, inverse = torch.unique(voxels, dim=0, return_inverse=True)
+    indices = torch.arange(point_count, dtype=torch.int64, device=points.device)
+    first_indices = torch.full(
+        (int(inverse.max()) + 1,),
+        point_count,
+        dtype=torch.int64,
+        device=points.device,
+    )
+    first_indices.scatter_reduce_(0, inverse, indices, reduce="amin", include_self=True)
+    return indices != first_indices[inverse]
 
 
 def _empty_batch(device: torch.device) -> GaussianAppendBatch:
@@ -389,9 +405,7 @@ class GrowthBuilder:
                     GrowthStats(self._finish_stats(stats)),
                 )
 
-        duplicate = _spatially_blocked(
-            points, points, duplicate_threshold, prior_query_only=True,
-        )
+        duplicate = _voxel_duplicates_after_first(points, duplicate_threshold)
         for descriptor in active_descriptors:
             duplicate_count = int((
                 duplicate & (source_types == int(descriptor.source_type))

@@ -2,7 +2,7 @@ import numpy as np
 import torch
 from types import SimpleNamespace
 
-from sage.engine.growth import GrowthBuilder
+from sage.engine.growth import GrowthBuilder, _voxel_duplicates_after_first
 from sage.foundation.config import (
     ALPHA_NORMALIZED_DEPTH_POLICY,
     GaussianInitializationConfig,
@@ -263,6 +263,18 @@ def test_persistent_dedup_uses_distance_not_voxel_identity() -> None:
         existing_points=torch.tensor([[0.049, 0.049, 1.049]]),
     )
     assert same_voxel_far.batch.means3d.shape[0] == 1
+
+
+def test_candidate_self_dedup_keeps_first_point_per_voxel() -> None:
+    points = torch.tensor([
+        [0.049, 0.000, 1.000],  # voxel (0, 0, 20)
+        [0.000, 0.049, 1.049],  # same voxel, but farther than 0.05 m
+        [0.051, 0.000, 1.000],  # adjacent voxel, only 2 mm from the first
+    ])
+
+    duplicate = _voxel_duplicates_after_first(points, 0.05)
+
+    assert duplicate.tolist() == [False, True, False]
 
 
 def test_growth_keeps_canonical_roles_for_lidar_center_only_input() -> None:
