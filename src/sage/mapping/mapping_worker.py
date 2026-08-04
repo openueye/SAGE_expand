@@ -15,7 +15,6 @@ import torch
 from ..core_input import CoreObservationAssembler
 from ..data.providers.spnet import OnlineSPNetProvider, SPNetEvidenceProvider
 from ..engine.metrics import ImageMetricEvaluator
-from ..engine.geometry import is_mapping_frame
 from ..engine.model import TrainableGaussians
 from ..engine.rendering import CachedRenderer, capture_renderer_identity
 from ..execution import (
@@ -33,7 +32,7 @@ from ..refinement.stage2_cache import (
 )
 from ..foundation.hashing import sha256_file
 from ..foundation.identity_schema import DependencyIdentity
-from .mapper import MappingEngine
+from .mapper import MappingEngine, should_invoke_spnet
 from .mapping_artifacts import write_run_artifacts
 from .run_identity import RunInputIdentity
 
@@ -151,7 +150,7 @@ def train(
 
     def cache_mapping_frames(frames):
         for frame in frames:
-            if is_mapping_frame(frame.index, map_every=config.mapping.map_every):
+            if should_invoke_spnet(frame.index, config.mapping):
                 stage2_cache.write(frame)
             yield frame
 
