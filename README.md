@@ -179,6 +179,18 @@ the canonical sequence digest while Stage 1 maps. ROSBAG physical write order
 therefore does not need to match sensor header order; payloads remain on disk
 until their indexed event is consumed.
 
+Some legacy captures have an empty `sensor_msgs` image `Header.frame_id`. For
+those captures, `online-window-v2` supports the explicit compatibility option
+below. It accepts only an empty image frame ID; a non-empty ID that disagrees
+with calibration remains an error. The option is recorded in adapter
+provenance and is not available for the frozen `batch-v1` path.
+
+```yaml
+input:
+  execution: online-window-v2
+  allow_empty_image_frame_id: true
+```
+
 Stage 1 writes `.stage2-input-cache` beside `structure/`. This is a transient,
 identity-bound handoff containing only mapping frames; Stage 2 reads it with
 bounded CPU/GPU LRUs and never replays an online ROSBAG. The cache remains

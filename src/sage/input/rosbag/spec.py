@@ -192,6 +192,7 @@ class RosbagInputSpec:
     depth: DepthSpec = DepthSpec()
     frame_limit: int | None = None
     execution: str = EXECUTION_BATCH_V1
+    allow_empty_image_frame_id: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "rosbag_path", Path(self.rosbag_path).expanduser().resolve())
@@ -210,6 +211,12 @@ class RosbagInputSpec:
             raise ValueError("input.frame_limit must be a positive integer when set")
         if self.execution not in EXECUTION_MODES:
             raise ValueError(f"input.execution must be one of {EXECUTION_MODES}")
+        if type(self.allow_empty_image_frame_id) is not bool:
+            raise ValueError("input.allow_empty_image_frame_id must be a boolean")
+        if self.allow_empty_image_frame_id and self.execution != EXECUTION_ONLINE_WINDOW_V2:
+            raise ValueError(
+                "input.allow_empty_image_frame_id requires execution=online-window-v2"
+            )
 
     @property
     def sources(self) -> tuple[str, ...]:
@@ -226,7 +233,7 @@ class RosbagInputSpec:
     def from_payload(cls, payload: Mapping[str, Any], *, base_dir: Path) -> "RosbagInputSpec":
         """Build from the config `input:` section; unknown keys are rejected."""
         expected = {"type", "rosbag", "calibration", "topics", "lidar", "synchronization", "fusion", "depth"}
-        optional = {"frame_limit", "execution"}
+        optional = {"frame_limit", "execution", "allow_empty_image_frame_id"}
         if not isinstance(payload, Mapping) or not expected <= set(payload) <= expected | optional:
             raise ValueError(
                 "input (rosbag2) must define: " + ", ".join(sorted(expected))
@@ -271,6 +278,7 @@ class RosbagInputSpec:
             depth=DepthSpec(**dict(payload["depth"])),
             frame_limit=payload.get("frame_limit"),
             execution=str(payload.get("execution", EXECUTION_BATCH_V1)),
+            allow_empty_image_frame_id=payload.get("allow_empty_image_frame_id", False),
         )
 
 

@@ -10,6 +10,9 @@ input:
   execution: online-window-v2
   rosbag: /home/haibo/Documents/Thesis/03_Datasets/001_Odin/Ferrari1
   calibration: /home/haibo/Documents/Thesis/03_Datasets/001_Odin/calibration.yaml
+  # Ferrari1's compressed-image messages have an empty Header.frame_id. The
+  # image topic remains explicit and calibration still supplies the camera frame.
+  allow_empty_image_frame_id: true
   topics:
     lidar: /odin1/cloud_slam
     image: /odin1/image/compressed

@@ -349,6 +349,35 @@ def test_online_adapter_maps_during_its_only_bag_pass_and_freezes_at_eof(tmp_pat
         list(resolved.frames())
 
 
+def test_online_adapter_rejects_empty_image_frame_id_without_opt_in(tmp_path) -> None:
+    from dataclasses import replace
+
+    spec = replace(
+        synthetic_input(tmp_path, image_frame_id=""),
+        execution="online-window-v2",
+    )
+
+    with pytest.raises(ValueError, match="Image header.frame_id"):
+        list(OnlineRosbagAdapter(spec).preflight().frames())
+
+
+def test_online_adapter_allows_empty_image_frame_id_when_explicitly_configured(tmp_path) -> None:
+    from dataclasses import replace
+
+    spec = synthetic_input(
+        tmp_path,
+        image_frame_id="",
+        execution="online-window-v2",
+        allow_empty_image_frame_id=True,
+    )
+    resolved = OnlineRosbagAdapter(spec).preflight()
+
+    frames = list(resolved.frames())
+
+    assert len(frames) == fixtures.FRAME_COUNT - 4
+    assert resolved.contract.adapter_details["allow_empty_image_frame_id"] is True
+
+
 def test_online_adapter_matches_the_batch_canonical_frames(tmp_path) -> None:
     from dataclasses import replace
 

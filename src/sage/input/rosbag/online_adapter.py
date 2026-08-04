@@ -133,6 +133,7 @@ class OnlineRosbagAdapter:
                 for role, identity in sorted(reader.topic_identities.items())
             },
             "points_frame": self._spec.points_frame,
+            "allow_empty_image_frame_id": self._spec.allow_empty_image_frame_id,
             "synchronization": self._spec.synchronization.payload(),
             "fusion": self._spec.fusion.payload(),
             "depth": self._spec.depth.payload(),
@@ -261,7 +262,14 @@ class OnlineRosbagAdapter:
                         )
                     lidars.append(event.locator)
                 else:
-                    if event.header.get("frame_id") != calibration.frames["camera"]:
+                    image_frame_id = event.header.get("frame_id")
+                    if (
+                        image_frame_id != calibration.frames["camera"]
+                        and not (
+                            self._spec.allow_empty_image_frame_id
+                            and image_frame_id == ""
+                        )
+                    ):
                         report.add_error(
                             "Image header.frame_id does not match calibration camera frame"
                         )

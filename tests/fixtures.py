@@ -121,6 +121,7 @@ def write_synthetic_bag(
     root: Path,
     *,
     image_encoding: str = "compressed",
+    image_frame_id: str = CAMERA_FRAME,
     frame_count: int = FRAME_COUNT,
 ) -> Path:
     bag = Path(root) / "bag"
@@ -142,12 +143,12 @@ def write_synthetic_bag(
             buffer = io.BytesIO()
             Image.fromarray(_image(index)[:, :, ::-1], mode="RGB").save(buffer, format="PNG")
             payload = encode_compressed_image(
-                stamp_sec=sec, stamp_nsec=nsec, frame_id=CAMERA_FRAME,
+                stamp_sec=sec, stamp_nsec=nsec, frame_id=image_frame_id,
                 image_format="png", data=buffer.getvalue(),
             )
         else:
             payload = encode_image(
-                stamp_sec=sec, stamp_nsec=nsec, frame_id=CAMERA_FRAME,
+                stamp_sec=sec, stamp_nsec=nsec, frame_id=image_frame_id,
                 image_bgr=_image(index),
             )
         messages.append((IMAGE_TOPIC, timestamp, payload))
@@ -204,7 +205,9 @@ def synthetic_input(root: Path, **spec_overrides):
     from sage.input.rosbag import RosbagInputSpec
 
     bag = write_synthetic_bag(root, **{
-        key: value for key, value in spec_overrides.items() if key == "image_encoding"
+        key: value
+        for key, value in spec_overrides.items()
+        if key in {"image_encoding", "image_frame_id"}
     })
     calibration = write_calibration(root)
     return RosbagInputSpec(
@@ -214,7 +217,11 @@ def synthetic_input(root: Path, **spec_overrides):
         image_topic=IMAGE_TOPIC,
         odometry_topic=ODOMETRY_TOPIC,
         points_frame="lidar_frame",
-        **{key: value for key, value in spec_overrides.items() if key != "image_encoding"},
+        **{
+            key: value
+            for key, value in spec_overrides.items()
+            if key not in {"image_encoding", "image_frame_id"}
+        },
     )
 
 
