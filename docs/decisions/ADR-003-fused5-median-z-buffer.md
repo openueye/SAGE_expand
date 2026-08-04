@@ -76,3 +76,12 @@ does not make the mean sensitive to the full depth spread.
 - The conflict rejection rule is unchanged.
 - Future validation should prioritize support-count distributions and evaluate
   both image quality and depth fit; the latter is not a ground-truth metric.
+
+## Final operational conclusion
+
+For the current formal training, no further fusion change is authorized by
+this experiment. Keep `median + support1` as the fixed policy. The projected
+visibility asymmetry is treated as an inherent motion/occlusion property, not
+as an unresolved implementation defect. Support-aware weighting or dropping
+single-neighbor pixels is deferred rather than introduced without a larger
+dataset and ground-truth evaluation.
