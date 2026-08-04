@@ -24,6 +24,10 @@ from ..foundation.code_identity import repository_code_identity
 from ..foundation.config import SageConfig
 from ..foundation.hashing import sha256_file
 from ..foundation.identity_schema import validate_dataset_identity
+from ..refinement.appearance_config import (
+    AppearanceRefinementConfig,
+    refinement_config_identity,
+)
 
 
 _EVALUATION_PROGRESS_EVERY = 50
@@ -42,6 +46,7 @@ def run_evaluation(
     output: Path,
     *,
     device: str,
+    refinement_config: AppearanceRefinementConfig | None = None,
     allow_stage1_checkpoint: bool = False,
 ) -> Path:
     """Evaluate every accepted frame emitted by either supported input."""
@@ -76,10 +81,19 @@ def run_evaluation(
     ):
         raise ValueError("Checkpoint and SAGE configuration do not match")
     if not is_stage1:
+        if refinement_config is None:
+            raise ValueError(
+                "Evaluating a final checkpoint requires the SAGE "
+                "refinement configuration"
+            )
+        expected_refinement_sha256 = refinement_config_identity(
+            training_identity, refinement_config
+        )
         refinement = checkpoint_payload.get("appearance_refinement")
         if (
             not isinstance(refinement, dict)
-            or refinement.get("refinement_config_sha256") != training_identity
+            or refinement.get("refinement_config_sha256")
+            != expected_refinement_sha256
         ):
             raise ValueError(
                 "Final checkpoint and SAGE configuration do not match"

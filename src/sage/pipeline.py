@@ -348,6 +348,7 @@ def run_training(
             final_checkpoint,
             evaluation_output,
             device=device,
+            refinement_config=method.refinement_config(),
         )
     if sha256_file(method.path) != config_sha256:
         raise RuntimeError(
