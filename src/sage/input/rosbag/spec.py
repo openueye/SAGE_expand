@@ -21,6 +21,17 @@ LIDAR_ASSOCIATIONS = ("nearest_to_anchor", "latest_not_after_anchor")
 POSE_INTERPOLATIONS = ("linear_slerp",)
 POINTS_FRAMES = ("lidar_frame", "reference_frame")
 
+_CONFIGURABLE_SYNCHRONIZATION_FIELDS = frozenset({
+    "lidar_association",
+    "max_lidar_skew_ms",
+    "max_pose_gap_ms",
+})
+_CONFIGURABLE_FUSION_FIELDS = frozenset({
+    "window",
+    "max_age_ms",
+    "conflict_threshold_m",
+})
+
 # Only one fusion policy is implemented. It is symmetric around the anchor and
 # therefore NOT causal: frame k uses scans from k-2..k+2. The name says so, and
 # `causal_trailing` is deliberately left unimplemented rather than aliased onto
@@ -223,6 +234,24 @@ class RosbagInputSpec:
         lidar = payload["lidar"]
         if not isinstance(lidar, Mapping) or set(lidar) != {"points_frame", "enable_fused"}:
             raise ValueError("input.lidar must define points_frame and enable_fused")
+        synchronization = payload["synchronization"]
+        if (
+            not isinstance(synchronization, Mapping)
+            or frozenset(synchronization) != _CONFIGURABLE_SYNCHRONIZATION_FIELDS
+        ):
+            raise ValueError(
+                "input.synchronization must define exactly: "
+                + ", ".join(sorted(_CONFIGURABLE_SYNCHRONIZATION_FIELDS))
+            )
+        fusion = payload["fusion"]
+        if (
+            not isinstance(fusion, Mapping)
+            or frozenset(fusion) != _CONFIGURABLE_FUSION_FIELDS
+        ):
+            raise ValueError(
+                "input.fusion must define exactly: "
+                + ", ".join(sorted(_CONFIGURABLE_FUSION_FIELDS))
+            )
         return cls(
             rosbag_path=_resolve(payload["rosbag"], base_dir),
             calibration_path=_resolve(payload["calibration"], base_dir),
@@ -231,8 +260,8 @@ class RosbagInputSpec:
             odometry_topic=str(topics["odometry"]),
             points_frame=str(lidar["points_frame"]),
             enable_fused=bool(lidar["enable_fused"]),
-            synchronization=SynchronizationSpec(**dict(payload["synchronization"])),
-            fusion=FusionSpec(**dict(payload["fusion"])),
+            synchronization=SynchronizationSpec(**dict(synchronization)),
+            fusion=FusionSpec(**dict(fusion)),
             depth=DepthSpec(**dict(payload["depth"])),
             frame_limit=payload.get("frame_limit"),
         )

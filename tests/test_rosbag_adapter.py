@@ -260,6 +260,89 @@ def test_preflight_freezes_accepted_frames_and_reports_rejections(tmp_path) -> N
     assert canonical.sources == ("LIDAR_CENTER", "LIDAR_FUSED")
 
 
+def test_rosbag_payload_uses_code_defaults_for_fixed_policies(tmp_path) -> None:
+    from sage.input.rosbag.spec import RosbagInputSpec
+
+    spec = RosbagInputSpec.from_payload(
+        {
+            "type": "rosbag2",
+            "rosbag": "bag",
+            "calibration": "calibration.yaml",
+            "topics": {
+                "lidar": "/points",
+                "image": "/image",
+                "odometry": "/odom",
+            },
+            "lidar": {
+                "points_frame": "lidar_frame",
+                "enable_fused": True,
+            },
+            "synchronization": {
+                "lidar_association": "nearest_to_anchor",
+                "max_lidar_skew_ms": 20.0,
+                "max_pose_gap_ms": 100.0,
+            },
+            "fusion": {
+                "window": 5,
+                "max_age_ms": 500.0,
+                "conflict_threshold_m": 1.0,
+            },
+            "depth": {
+                "min_depth_m": 0.1,
+                "max_depth_m": 200.0,
+            },
+        },
+        base_dir=tmp_path,
+    )
+
+    assert spec.synchronization.anchor == "image"
+    assert spec.synchronization.timestamp_policy == "header_stamp"
+    assert spec.synchronization.pose_interpolation == "linear_slerp"
+    assert spec.synchronization.allow_pose_extrapolation is False
+    assert spec.fusion.policy == "centered_window"
+    assert spec.fusion.z_buffer == "nearest"
+    assert spec.fusion.current_scan_priority is True
+    assert spec.fusion.warmup_policy == "drop_incomplete_window"
+    assert spec.fusion.payload()["causal"] is False
+
+
+def test_rosbag_payload_rejects_fixed_policy_fields(tmp_path) -> None:
+    from sage.input.rosbag.spec import RosbagInputSpec
+
+    payload = {
+        "type": "rosbag2",
+        "rosbag": "bag",
+        "calibration": "calibration.yaml",
+        "topics": {
+            "lidar": "/points",
+            "image": "/image",
+            "odometry": "/odom",
+        },
+        "lidar": {
+            "points_frame": "lidar_frame",
+            "enable_fused": True,
+        },
+        "synchronization": {
+            "anchor": "image",
+            "lidar_association": "nearest_to_anchor",
+            "max_lidar_skew_ms": 20.0,
+            "max_pose_gap_ms": 100.0,
+        },
+        "fusion": {
+            "window": 5,
+            "max_age_ms": 500.0,
+            "conflict_threshold_m": 1.0,
+        },
+        "depth": {
+            "min_depth_m": 0.1,
+            "max_depth_m": 200.0,
+        },
+    }
+
+    with pytest.raises(ValueError, match="input.synchronization"):
+        RosbagInputSpec.from_payload(payload, base_dir=tmp_path)
+
+
 def test_preflight_rejects_a_topic_whose_frame_contradicts_the_calibration(tmp_path) -> None:
     spec = synthetic_input(tmp_path)
     from dataclasses import replace
