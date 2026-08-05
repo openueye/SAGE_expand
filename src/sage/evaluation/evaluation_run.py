@@ -21,6 +21,7 @@ from ..engine.evaluation import (
 )
 from ..engine.metrics import ImageMetricEvaluator
 from ..engine.model import TrainableGaussians
+from ..engine.render_export import EvaluationRenderExporter
 from ..engine.rendering import render
 from ..foundation.artifact_versions import (
     APPEARANCE_REFINEMENT_CHECKPOINT_VERSION,
@@ -197,6 +198,9 @@ def run_evaluation(
                     flush=True,
                 )
 
+        render_exporter = EvaluationRenderExporter(
+            staging, keyframe_every=config.mapping.keyframe_every,
+        )
         try:
             print("SAGE evaluation: rendering accepted frames", flush=True)
             with torch.no_grad():
@@ -207,6 +211,7 @@ def run_evaluation(
                     image_metrics=evaluator,
                     policy=policy,
                     map_every=1,
+                    render_export=render_exporter,
                     progress_callback=report_evaluation_progress,
                 )
             stream.close()
@@ -346,6 +351,12 @@ def run_evaluations(
         frame_reports: dict[str, list[dict[str, object]]] = {
             stage: [] for stage in prepared
         }
+        render_exporters = {
+            stage: EvaluationRenderExporter(
+                staging[stage], keyframe_every=config.mapping.keyframe_every,
+            )
+            for stage in prepared
+        }
         evaluation_started = perf_counter()
         try:
             print("SAGE evaluation: rendering accepted frames", flush=True)
@@ -358,6 +369,7 @@ def run_evaluations(
                             renderer=render,
                             image_metrics=evaluator,
                             policy=policy,
+                            render_export=render_exporters[stage],
                         ))
                     if completed % _EVALUATION_PROGRESS_EVERY == 0:
                         print(

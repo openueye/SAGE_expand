@@ -12,6 +12,7 @@ from ..foundation.config import ALPHA_NORMALIZED_DEPTH_POLICY, RAW_ACCUMULATED_D
 from ..foundation.contracts import MappingObservation, SourceType
 from ..core_input import MappingFrame
 from .losses import alpha_normalized_depth
+from .render_export import EvaluationRenderExporter
 from .rendering import RenderOutput
 
 
@@ -334,6 +335,7 @@ def evaluate_frames(
     image_metrics: Callable[[torch.Tensor, torch.Tensor], object],
     policy: EvaluationDepthPolicy,
     map_every: int,
+    render_export: EvaluationRenderExporter,
     progress_callback: Callable[[int, MappingFrame], None] | None = None,
 ) -> dict[str, Any]:
     """Run the frozen image and geometry protocol over an ordered frame stream."""
@@ -345,6 +347,7 @@ def evaluate_frames(
             continue
         frame_reports.append(evaluate_frame(
             model, frame, renderer=renderer, image_metrics=image_metrics, policy=policy,
+            render_export=render_export,
         ))
         if progress_callback is not None:
             progress_callback(len(frame_reports), frame)
@@ -361,6 +364,7 @@ def evaluate_frame(
     renderer: Callable[[object, MappingFrame], RenderOutput],
     image_metrics: Callable[[torch.Tensor, torch.Tensor], object],
     policy: EvaluationDepthPolicy,
+    render_export: EvaluationRenderExporter,
 ) -> dict[str, Any]:
     """Evaluate one already-selected frame for one checkpoint."""
     output = renderer(model, frame)
@@ -368,7 +372,7 @@ def evaluate_frame(
         output.rgb,
         torch.as_tensor(frame.rgb, dtype=torch.float32, device=output.rgb.device),
     )
-    return {
+    report = {
         "index": frame.index,
         "stem": frame.stem,
         "image": {
@@ -378,6 +382,8 @@ def evaluate_frame(
         },
         "geometry": evaluate_render_output(output, frame.mapping, policy=policy),
     }
+    render_export.export(frame, output)
+    return report
 
 
 def aggregate_evaluation_frame_reports(
