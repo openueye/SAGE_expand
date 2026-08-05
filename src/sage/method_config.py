@@ -161,9 +161,10 @@ class SageMethodConfig:
             set(),
             {"model_id", "enabled", "depth_scale_m", "confidence", "sample_stride"},
         )
-        mapping = _section(
+        mapping = _section_with_optional(
             payload,
             "mapping",
+            {"growth", "pruning", "loss"},
             {
                 "map_every",
                 "keyframe_every",
@@ -174,9 +175,6 @@ class SageMethodConfig:
                 "initial_opacity",
                 "scale_clamp_min",
                 "initial_scale_anisotropy",
-                "growth",
-                "pruning",
-                "loss",
             },
         )
         refinement = _section_with_optional(
@@ -347,12 +345,6 @@ class SageMethodConfig:
             pruning=parts["pruning"],
             mapping=MappingConfig(
                 frame_policy=ALL_ACCEPTED_FRAME_POLICY,
-                map_every=self.mapping["map_every"],
-                keyframe_every=self.mapping["keyframe_every"],
-                iterations=self.mapping["iterations"],
-                prune_every=self.mapping["prune_every"],
-                prune_stop_after=self.mapping["prune_stop_after"],
-                learning_rates=self.mapping["learning_rates"],
                 optimization_variant=GLOBAL_CURRENT_ANCHORED_VARIANT,
                 evaluation_depth_policy=ALPHA_NORMALIZED_DEPTH_POLICY,
                 evaluation_min_alpha=evaluation["min_alpha"],
@@ -360,12 +352,15 @@ class SageMethodConfig:
                 evaluation_alpha_support_a0=evaluation["alpha_support"],
                 evaluation_hit_target_center=evaluation["hit_target_center"],
                 evaluation_hit_target_fused=evaluation["hit_target_fused"],
+                **_optional_kwargs(self.mapping, {
+                    "map_every", "keyframe_every", "iterations",
+                    "prune_every", "prune_stop_after", "learning_rates",
+                }),
             ),
-            gaussian_initialization=GaussianInitializationConfig(
-                opacity=self.mapping["initial_opacity"],
-                scale_clamp_min=self.mapping["scale_clamp_min"],
-                initial_scale_anisotropy=self.mapping["initial_scale_anisotropy"],
-            ),
+            gaussian_initialization=GaussianInitializationConfig(**{
+                **({"opacity": self.mapping["initial_opacity"]} if "initial_opacity" in self.mapping else {}),
+                **_optional_kwargs(self.mapping, {"scale_clamp_min", "initial_scale_anisotropy"}),
+            }),
             loss=parts["loss"],
             model_root=self.runtime_model_root(),
         )

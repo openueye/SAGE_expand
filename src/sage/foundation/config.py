@@ -118,7 +118,7 @@ class SPNetOnlineConfig:
 
 @dataclass(frozen=True)
 class GaussianInitializationConfig:
-    opacity: float
+    opacity: float = 0.5
     scale_clamp_min: float = 1e-4
     initial_scale_anisotropy: tuple[float, float, float] = (0.95, 1.05, 1.20)
 
@@ -309,11 +309,11 @@ class MappingLossConfig:
 @dataclass(frozen=True)
 class MappingConfig:
     frame_policy: str = ALL_ACCEPTED_FRAME_POLICY
-    map_every: int = 1
+    map_every: int = 5
     keyframe_every: int = 5
-    iterations: int = 60
-    prune_every: int = 20
-    prune_stop_after: int = 20
+    iterations: int = 90
+    prune_every: int = 30
+    prune_stop_after: int = 90
     learning_rates: dict[str, float] | None = None
     optimization_variant: str = GLOBAL_CURRENT_ANCHORED_VARIANT
     evaluation_depth_policy: str = ALPHA_NORMALIZED_DEPTH_POLICY
