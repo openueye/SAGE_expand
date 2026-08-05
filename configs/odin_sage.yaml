@@ -1,0 +1,81 @@
+seed: 0
+
+runtime:
+  model_root: ../../SAGE-models
+  require_clean_worktree: false
+  prefetch_depth: 4
+
+input:
+  type: rosbag2
+  execution: online-window-v2
+  rosbag: /home/haibo/Documents/Thesis/03_Datasets/001_Odin/Ferrari1
+  calibration: /home/haibo/Documents/Thesis/03_Datasets/001_Odin/calibration.yaml
+  # Ferrari1's compressed-image messages have an empty Header.frame_id. The
+  # image topic remains explicit and calibration still supplies the camera frame.
+  allow_empty_image_frame_id: true
+  topics:
+    lidar: /odin1/cloud_slam
+    image: /odin1/image/compressed
+    odometry: /odin1/odometry
+  lidar:
+    # cloud_slam publishes each scan already registered into the odometry
+    # reference frame; the pose chain must not be applied a second time.
+    points_frame: reference_frame
+    enable_fused: true
+  synchronization:
+    lidar_association: nearest_to_anchor
+    max_lidar_skew_ms: 20.0
+    max_pose_gap_ms: 100.0
+  fusion:
+    window: 5
+    max_age_ms: 500.0
+    z_buffer: median
+    conflict_threshold_m: 1.0
+  depth:
+    min_depth_m: 0.1
+    max_depth_m: 200.0
+
+spnet:
+  model_id: spnet-large-300
+  enabled: true
+
+mapping:
+  map_every: 5
+  keyframe_every: 5
+  iterations: 90
+  prune_every: 30
+  prune_stop_after: 90
+  learning_rates:
+    means3d: 0.00016
+    colors: 0.0025
+    opacity_logits: 0.05
+    log_scales: 0.001
+    rotations: 0.001
+  initial_opacity: 0.5
+  scale_clamp_min: 1e-4
+  initial_scale_anisotropy: [0.95, 1.05, 1.20]
+  growth:
+    # coverage_alpha_threshold / min_candidate_depth_m / max_candidate_depth_m /
+    # candidate_duplicate_3d_threshold_m / residual_thresholds match the
+    # GrowthConfig defaults and are omitted. confidence_thresholds is the one
+    # Calib-Coverage-thresholds result: stays explicit so the policy is visible.
+    confidence_thresholds: {LIDAR_CENTER: 0.0, LIDAR_FUSED: 0.0, SPNET_COMPLETED: 0.0}
+  pruning:
+    # Calib-Opacity-thresholds: layered [0.03, 0.05, 0.15] is now the
+    # PruningConfig/source_policy default, so this is null.
+    opacity_thresholds: null
+  # All 7 fields (including depth_weight=0.25) match MappingLossConfig
+  # defaults and are omitted.
+  loss: {}
+
+# All refinement fields (including lidar_depth_weight=0.25) match
+# AppearanceRefinementConfig/DensePriorPolicy defaults and are omitted.
+refinement: {}
+
+evaluation:
+  min_alpha: 0.01
+  epsilon: 0.000001
+  alpha_support: 0.01
+  hit_target_center: 0.5
+  hit_target_fused: 0.35
+  # checkpoint_stages: ["stage1_mapping", "stage2_refinement"]

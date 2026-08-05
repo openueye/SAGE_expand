@@ -74,6 +74,12 @@ def _section_with_optional(
     required: set[str],
     optional: set[str],
 ) -> dict[str, Any]:
+    """Validate field membership only; omitted optional fields stay absent.
+
+    Callers pass the result through `_optional_kwargs` so the target
+    dataclass's own default applies to whatever was left out, instead of a
+    synthetic fill value that may not match that field's real default.
+    """
     value = payload.get(name)
     if (
         not isinstance(value, dict)
@@ -83,7 +89,12 @@ def _section_with_optional(
             f"SAGE {name} must define: {', '.join(sorted(required))}; "
             f"optional fields: {', '.join(sorted(optional))}"
         )
-    return {**{field: 0.0 for field in optional}, **value}
+    return dict(value)
+
+
+def _optional_kwargs(payload: dict[str, Any], names: set[str]) -> dict[str, Any]:
+    """Keyword arguments for exactly the fields present in `payload`."""
+    return {name: payload[name] for name in names if name in payload}
 
 
 def _runtime_section(payload: dict[str, Any]) -> dict[str, Any]:
@@ -144,10 +155,11 @@ class SageMethodConfig:
         input_config = payload["input"]
         if not isinstance(input_config, dict) or not isinstance(input_config.get("type"), str):
             raise ValueError("SAGE input must be an object declaring a type")
-        spnet = _section(
+        spnet = _section_with_optional(
             payload,
             "spnet",
-            {"model_id", "depth_scale_m", "confidence", "sample_stride"},
+            set(),
+            {"model_id", "enabled", "depth_scale_m", "confidence", "sample_stride"},
         )
         mapping = _section(
             payload,
@@ -170,10 +182,14 @@ class SageMethodConfig:
         refinement = _section_with_optional(
             payload,
             "refinement",
+            set(),
             {
                 "iterations",
                 "color_learning_rate",
                 "opacity_learning_rate",
+                "means3d_learning_rate",
+                "log_scales_learning_rate",
+                "rotations_learning_rate",
                 "opacity_anchor_weight",
                 "lidar_depth_weight",
                 "dense_normal_weight",
@@ -187,11 +203,6 @@ class SageMethodConfig:
                 "exposure_anchor_weight",
                 "ssim_weight",
                 "milestones",
-            },
-            {
-                "means3d_learning_rate",
-                "log_scales_learning_rate",
-                "rotations_learning_rate",
             },
         )
         evaluation = _evaluation_section(payload)
@@ -251,24 +262,25 @@ class SageMethodConfig:
         growth = _section_with_optional(
             self.mapping,
             "growth",
+            {"confidence_thresholds"},
             {
                 "coverage_alpha_threshold",
                 "min_candidate_depth_m",
                 "max_candidate_depth_m",
                 "candidate_duplicate_3d_threshold_m",
-                "confidence_thresholds",
                 "residual_thresholds",
+                "max_new_per_commit",
             },
-            {"max_new_per_commit"},
         )
         pruning = _section(
             self.mapping,
             "pruning",
             {"opacity_thresholds"},
         )
-        loss = _section(
+        loss = _section_with_optional(
             self.mapping,
             "loss",
+            set(),
             {
                 "image_weight",
                 "ssim_weight",
@@ -279,45 +291,38 @@ class SageMethodConfig:
                 "epsilon",
             },
         )
-        residuals = growth["residual_thresholds"]
-        if not isinstance(residuals, dict):
+        residuals = growth.get("residual_thresholds")
+        if residuals is not None and not isinstance(residuals, dict):
             raise ValueError("SAGE growth residual_thresholds must be an object")
+        loss_kwargs = _optional_kwargs(loss, {
+            "image_weight", "ssim_weight", "depth_weight",
+            "depth_coverage_weight", "depth_coverage_threshold", "epsilon",
+        })
+        if "alpha_support" in loss:
+            loss_kwargs["alpha_support_a0"] = loss["alpha_support"]
         return {
             "spnet": SPNetOnlineConfig(
-                model_id=self.spnet["model_id"],
+                model_id=self.spnet.get("model_id", ""),
                 adapter_policy=NATIVE_FULL_FRAME_PAD_CROP_V1,
-                depth_scale_m=self.spnet["depth_scale_m"],
-                confidence=self.spnet["confidence"],
-                sample_stride=self.spnet["sample_stride"],
+                **_optional_kwargs(self.spnet, {"enabled", "depth_scale_m", "confidence", "sample_stride"}),
             ),
             "growth": GrowthConfig(
-                coverage_alpha_threshold=growth["coverage_alpha_threshold"],
-                min_candidate_depth_m=growth["min_candidate_depth_m"],
-                max_candidate_depth_m=growth["max_candidate_depth_m"],
-                candidate_duplicate_3d_threshold_m=(
-                    growth["candidate_duplicate_3d_threshold_m"]
-                ),
                 confidence_thresholds=growth["confidence_thresholds"],
-                residual_thresholds={
-                    name: ResidualThreshold(**threshold)
-                    for name, threshold in residuals.items()
-                },
+                residual_thresholds=(
+                    {name: ResidualThreshold(**threshold) for name, threshold in residuals.items()}
+                    if residuals is not None else None
+                ),
                 depth_policy=ALPHA_NORMALIZED_DEPTH_POLICY,
                 # 读原始 payload 而不是 growth[...]，避开 _section_with_optional 的
                 # 0.0 缺省填充：不写该键表示不限量，写了就必须是完整的每源配额。
                 max_new_per_commit=self.mapping["growth"].get("max_new_per_commit"),
+                **_optional_kwargs(growth, {
+                    "coverage_alpha_threshold", "min_candidate_depth_m",
+                    "max_candidate_depth_m", "candidate_duplicate_3d_threshold_m",
+                }),
             ),
             "pruning": PruningConfig(**pruning),
-            "loss": MappingLossConfig(
-                variant=FROZEN_MAPPING_LOSS_VARIANT,
-                image_weight=loss["image_weight"],
-                ssim_weight=loss["ssim_weight"],
-                depth_weight=loss["depth_weight"],
-                depth_coverage_weight=loss["depth_coverage_weight"],
-                alpha_support_a0=loss["alpha_support"],
-                depth_coverage_threshold=loss["depth_coverage_threshold"],
-                epsilon=loss["epsilon"],
-            ),
+            "loss": MappingLossConfig(variant=FROZEN_MAPPING_LOSS_VARIANT, **loss_kwargs),
         }
 
     def _input(self) -> InputConfig:
@@ -365,51 +370,36 @@ class SageMethodConfig:
         )
 
     def refinement_config(self) -> AppearanceRefinementConfig:
-        dense = _section(
-            self.refinement,
-            "dense_prior",
-            {
-                "grid_height",
-                "grid_width",
-                "min_lidar_support",
-                "confidence_exponent",
-            },
-        )
+        refinement = self.refinement
+        dense_payload = refinement.get("dense_prior")
+        dense_fields = {"grid_height", "grid_width", "min_lidar_support", "confidence_exponent"}
+        if dense_payload is not None and (
+            not isinstance(dense_payload, dict) or not set(dense_payload) <= dense_fields
+        ):
+            raise ValueError(
+                "SAGE refinement dense_prior fields must be a subset of: "
+                + ", ".join(sorted(dense_fields))
+            )
+        kwargs = _optional_kwargs(refinement, {
+            "iterations", "color_learning_rate", "opacity_learning_rate",
+            "means3d_learning_rate", "log_scales_learning_rate", "rotations_learning_rate",
+            "opacity_anchor_weight", "lidar_depth_weight", "dense_normal_weight",
+            "dense_normal_edge_weight_gamma", "dense_normal_max_relative_depth_jump",
+            "exposure_learning_rate", "exposure_log_gain_bound", "exposure_bias_bound",
+            "exposure_anchor_weight", "ssim_weight",
+        })
+        if "dense_normal_alpha_support" in refinement:
+            kwargs["dense_normal_alpha_support_a0"] = refinement["dense_normal_alpha_support"]
+        if "milestones" in refinement:
+            kwargs["milestone_steps"] = tuple(refinement["milestones"])
         return AppearanceRefinementConfig(
             schema_version=APPEARANCE_REFINEMENT_SCHEMA,
-            iterations=self.refinement["iterations"],
             seed=self.seed,
             sampling_variant=SEEDED_RANDOM_MAPPING_FRAME_VARIANT,
-            color_learning_rate=self.refinement["color_learning_rate"],
-            opacity_learning_rate=self.refinement["opacity_learning_rate"],
-            means3d_learning_rate=self.refinement["means3d_learning_rate"],
-            log_scales_learning_rate=(
-                self.refinement["log_scales_learning_rate"]
-            ),
-            rotations_learning_rate=(
-                self.refinement["rotations_learning_rate"]
-            ),
-            opacity_anchor_weight=self.refinement["opacity_anchor_weight"],
-            lidar_depth_weight=self.refinement["lidar_depth_weight"],
-            dense_normal_weight=self.refinement["dense_normal_weight"],
-            dense_normal_edge_weight_gamma=(
-                self.refinement["dense_normal_edge_weight_gamma"]
-            ),
-            dense_normal_alpha_support_a0=(
-                self.refinement["dense_normal_alpha_support"]
-            ),
-            dense_normal_max_relative_depth_jump=(
-                self.refinement["dense_normal_max_relative_depth_jump"]
-            ),
+            exposure_gauge_variant=FIRST_MAPPING_FRAME_EXPOSURE_GAUGE,
             dense_prior=DensePriorPolicy(
-                **dense,
+                **(dense_payload or {}),
                 alignment_variant=DENSE_ALIGNMENT_NONWORSENING_V2,
             ),
-            exposure_learning_rate=self.refinement["exposure_learning_rate"],
-            exposure_log_gain_bound=self.refinement["exposure_log_gain_bound"],
-            exposure_bias_bound=self.refinement["exposure_bias_bound"],
-            exposure_anchor_weight=self.refinement["exposure_anchor_weight"],
-            exposure_gauge_variant=FIRST_MAPPING_FRAME_EXPOSURE_GAUGE,
-            ssim_weight=self.refinement["ssim_weight"],
-            milestone_steps=tuple(self.refinement["milestones"]),
+            **kwargs,
         )

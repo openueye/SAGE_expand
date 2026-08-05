@@ -39,10 +39,10 @@ def _positive_integer(value: object, name: str) -> int:
 
 @dataclass(frozen=True)
 class DensePriorPolicy:
-    grid_height: int
-    grid_width: int
-    min_lidar_support: int
-    confidence_exponent: float
+    grid_height: int = 2
+    grid_width: int = 2
+    min_lidar_support: int = 8
+    confidence_exponent: float = 2.0
     alignment_variant: str = DENSE_ALIGNMENT_NONWORSENING_V2
 
     def __post_init__(self) -> None:

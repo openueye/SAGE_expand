@@ -179,7 +179,7 @@ def write_run_artifacts(
                 "prune_state_migrations": run.optimizer_prune_migrations,
             },
             "spnet_execution": {
-                "mode": config.growth_sources.spnet.mode,
+                "mode": run.spnet_identity.mode,
                 "expected_invocations": run.spnet_expected_invocations,
                 "actual_invocations": run.spnet_actual_invocations,
                 "anchor_source_types": list(run.spnet_anchor_source_types),

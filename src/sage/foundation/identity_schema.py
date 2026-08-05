@@ -21,6 +21,7 @@ _DEPENDENCY_FIELDS = {
             "kind", "source_id", "model_id", "source_commit", "weights_sha256", "source_tree_sha256",
             "depth_scale_m", "confidence", "sample_stride", "adapter", "actual_invocations",
         },
+        "disabled": {"kind", "source_id"},
     },
     "metric": {
         "repository-offline": {

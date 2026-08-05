@@ -84,7 +84,8 @@ class GrowthSourcesConfig:
 
 @dataclass(frozen=True)
 class SPNetOnlineConfig:
-    model_id: str
+    model_id: str = ""
+    enabled: bool = True
     adapter_policy: str | None = None
     depth_scale_m: float = 200.0
     confidence: float = 0.4
@@ -92,8 +93,12 @@ class SPNetOnlineConfig:
     mode: str = field(default="online", init=False)
 
     def __post_init__(self) -> None:
-        if not isinstance(self.model_id, str) or not self.model_id:
-            raise ValueError("SPNet model_id must be a non-empty logical identifier")
+        if type(self.enabled) is not bool:
+            raise ValueError("SPNet enabled must be a boolean")
+        if not isinstance(self.model_id, str):
+            raise ValueError("SPNet model_id must be a string")
+        if self.enabled and not self.model_id:
+            raise ValueError("SPNet model_id must be a non-empty logical identifier when enabled")
         if self.adapter_policy != NATIVE_FULL_FRAME_PAD_CROP_V1:
             raise ValueError("SPNet requires an explicit supported adapter_policy")
         if type(self.sample_stride) is not int or self.sample_stride < 1:
@@ -258,7 +263,7 @@ class MappingLossConfig:
     variant: str = FROZEN_MAPPING_LOSS_VARIANT
     image_weight: float = 1.0
     ssim_weight: float = 0.2
-    depth_weight: float = 0.005
+    depth_weight: float = 0.25
     depth_coverage_weight: float = 0.05
     alpha_support_a0: float = 0.85
     depth_coverage_threshold: float = 0.85

@@ -13,7 +13,7 @@ import numpy as np
 import torch
 
 from ..core_input import CoreObservationAssembler
-from ..data.providers.spnet import OnlineSPNetProvider, SPNetEvidenceProvider
+from ..data.providers.spnet import DisabledSPNetProvider, OnlineSPNetProvider, SPNetEvidenceProvider
 from ..engine.metrics import ImageMetricEvaluator
 from ..engine.model import TrainableGaussians
 from ..engine.rendering import CachedRenderer, capture_renderer_identity
@@ -71,6 +71,8 @@ def _report_frames(
 
 
 def _build_spnet_provider(config: SageConfig, *, device: str) -> SPNetEvidenceProvider:
+    if not config.growth_sources.spnet.enabled:
+        return DisabledSPNetProvider()
     return OnlineSPNetProvider(
         config.growth_sources.spnet,
         device=device,
