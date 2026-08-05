@@ -272,9 +272,10 @@ class SageMethodConfig:
                 "max_new_per_commit",
             },
         )
-        pruning = _section(
+        pruning = _section_with_optional(
             self.mapping,
             "pruning",
+            set(),
             {"opacity_thresholds"},
         )
         loss = _section_with_optional(
