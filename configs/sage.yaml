@@ -71,7 +71,7 @@ mapping:
   loss:
     image_weight: 1.0
     ssim_weight: 0.2
-    depth_weight: 0.268780155032039
+    depth_weight: 0.25
     depth_coverage_weight: 0.05
     alpha_support: 0.85
     depth_coverage_threshold: 0.85
@@ -85,7 +85,7 @@ refinement:
   log_scales_learning_rate: 0.0001
   rotations_learning_rate: 0.0001
   opacity_anchor_weight: 0.1
-  lidar_depth_weight: 0.268780155032039
+  lidar_depth_weight: 0.25
   dense_normal_weight: 0.05
   dense_normal_edge_weight_gamma: 10.0
   dense_normal_alpha_support: 0.85
@@ -108,4 +108,5 @@ evaluation:
   alpha_support: 0.01
   hit_target_center: 0.5
   hit_target_fused: 0.35
+  checkpoint_stages: ["stage2_refinement"]
   # checkpoint_stages: ["stage1_mapping", "stage2_refinement"]
