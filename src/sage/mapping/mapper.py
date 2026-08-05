@@ -85,9 +85,6 @@ class PruningResult:
     mature_opacity_removed: int
     mature_opacity_removed_by_source: dict[str, int]
     newborn_protected_ids: torch.Tensor
-    spnet_age_protected: int
-    spnet_age_protected_by_source: dict[str, int]
-    spnet_age_protected_ids: torch.Tensor
 
 
 @dataclass(frozen=True)
@@ -180,7 +177,6 @@ class MappingEngine:
         self.config = config
         self.pruning = pruning
         self.growth = growth
-        self.spnet_min_prune_age = pruning.spnet_min_prune_age
         self.device = torch.device(device)
         if renderer is None:
             raise RuntimeError("Production mapping requires the gsplat CUDA renderer")
@@ -362,7 +358,7 @@ class MappingEngine:
                 final_loss = 0.0
                 active_descriptors = descriptors_for_types(model.source_types)
                 pruned_by_source = {descriptor.name: 0 for descriptor in active_descriptors}
-                pruned_by_reason = {"opacity_only": 0, "scale_only": 0, "opacity_and_scale": 0}
+                pruned_by_reason = {"opacity": 0}
                 newborn_protected_by_source = {descriptor.name: 0 for descriptor in active_descriptors}
                 mature_opacity_removed_by_source = {descriptor.name: 0 for descriptor in active_descriptors}
                 newborn_protected_id_chunks: list[torch.Tensor] = []
@@ -401,8 +397,6 @@ class MappingEngine:
                             model,
                             optimizer,
                             current_frame_index=frame.index,
-                            mapping_commit_ordinal=mapping_commit_number,
-                            commit_ordinal_by_frame_index=commit_ordinal_by_frame_index,
                         )
                         pruning_event_executed = True
                         if prune_result.pruned:
@@ -561,74 +555,23 @@ class MappingEngine:
             dense_spnet_frames=tuple(dense_spnet_frames),
         )
 
-    @staticmethod
-    def _age_in_mapping_commits(
-        created_at: torch.Tensor,
-        *,
-        current_frame_index: int,
-        mapping_commit_ordinal: int,
-        commit_ordinal_by_frame_index: dict[int, int],
-    ) -> torch.Tensor:
-        """Vectorized age-in-mapping-commits, matching the row-event sidecar's age=0
-        special case (current-commit rows, including the frame-0 bootstrap population).
-
-        created_at only ever takes values from the small set of past commit frame
-        indices, so this gathers through a tiny frame_index -> commit_ordinal lookup
-        table instead of sorting the full (up to ~1M-row) Gaussian population.
-        """
-        device = created_at.device
-        frame_indices = list(commit_ordinal_by_frame_index.keys()) + [current_frame_index]
-        ordinals = list(commit_ordinal_by_frame_index.values()) + [mapping_commit_ordinal]
-        lookup = torch.zeros(max(frame_indices) + 1, dtype=torch.int32, device=device)
-        lookup[torch.tensor(frame_indices, dtype=torch.int64, device=device)] = torch.tensor(
-            ordinals, dtype=torch.int32, device=device,
-        )
-        return mapping_commit_ordinal - lookup[created_at]
-
     def _prune_once(
         self,
         model: TrainableGaussians,
         optimizer: torch.optim.Optimizer,
         *,
         current_frame_index: int,
-        mapping_commit_ordinal: int,
-        commit_ordinal_by_frame_index: dict[int, int],
     ) -> PruningResult:
         opacity_keep = opacity_keep_mask(model.opacities, model.source_types, self.pruning.opacity_thresholds)
-        scale_keep = torch.ones_like(opacity_keep)
-        ceiling = self.pruning.spnet_scale_ceiling_m
-        if ceiling is not None:
-            is_spnet = model.source_types == int(SourceType.SPNET_COMPLETED)
-            over_ceiling = is_spnet & (model.scales.detach().max(dim=1).values > ceiling)
-            scale_keep = ~over_ceiling
-        policy_keep = opacity_keep & scale_keep
+        policy_keep = opacity_keep
         newborn = (current_frame_index > 0) & (model.created_at == current_frame_index)
-        row_age = self._age_in_mapping_commits(
-            model.created_at,
-            current_frame_index=current_frame_index,
-            mapping_commit_ordinal=mapping_commit_ordinal,
-            commit_ordinal_by_frame_index=commit_ordinal_by_frame_index,
-        )
-        spnet_age_protected_mask = (
-            (model.source_types == int(SourceType.SPNET_COMPLETED))
-            & ~policy_keep
-            & (row_age >= 1)
-            & (row_age < self.spnet_min_prune_age)
-        )
-        keep = newborn | policy_keep | spnet_age_protected_mask
+        keep = newborn | policy_keep
         if not bool(keep.any()):
             keep[torch.argmax(model.opacities.detach().reshape(-1))] = True
         removed_mask = ~keep
         active_descriptors = descriptors_for_types(model.source_types)
         by_source = {descriptor.name: int((removed_mask & (model.source_types == int(descriptor.source_type))).sum()) for descriptor in active_descriptors}
-        opacity_only_mask = removed_mask & ~opacity_keep & scale_keep
-        scale_only_mask = removed_mask & opacity_keep & ~scale_keep
-        opacity_and_scale_mask = removed_mask & ~opacity_keep & ~scale_keep
-        by_reason = {
-            "opacity_only": int(opacity_only_mask.sum()),
-            "scale_only": int(scale_only_mask.sum()),
-            "opacity_and_scale": int(opacity_and_scale_mask.sum()),
-        }
+        by_reason = {"opacity": int(removed_mask.sum())}
         newborn_protected_mask = newborn & ~policy_keep
         mature_removed_mask = removed_mask & ~newborn
         mature_opacity_mask = mature_removed_mask & ~opacity_keep
@@ -644,16 +587,9 @@ class MappingEngine:
             descriptor.name: int((mature_opacity_mask & (model.source_types == int(descriptor.source_type))).sum())
             for descriptor in active_descriptors
         }
-        spnet_age_protected = int(spnet_age_protected_mask.sum())
-        spnet_age_protected_ids = model.gaussian_ids[spnet_age_protected_mask].detach()
-        spnet_age_protected_by_source = {
-            descriptor.name: int((spnet_age_protected_mask & (model.source_types == int(descriptor.source_type))).sum())
-            for descriptor in active_descriptors
-        }
         if (sum(by_source.values()) != removed or sum(by_reason.values()) != removed
                 or sum(newborn_protected_by_source.values()) != newborn_protected
-                or sum(mature_opacity_removed_by_source.values()) != mature_opacity_removed
-                or sum(spnet_age_protected_by_source.values()) != spnet_age_protected):
+                or sum(mature_opacity_removed_by_source.values()) != mature_opacity_removed):
             raise RuntimeError("Pruning statistics are inconsistent with the final keep mask")
         model.prune_rows(keep, optimizer=optimizer)
         return PruningResult(
@@ -665,7 +601,4 @@ class MappingEngine:
             mature_opacity_removed,
             mature_opacity_removed_by_source,
             newborn_protected_ids,
-            spnet_age_protected,
-            spnet_age_protected_by_source,
-            spnet_age_protected_ids,
         )

@@ -235,8 +235,6 @@ class GrowthConfig:
 @dataclass(frozen=True)
 class PruningConfig:
     opacity_thresholds: dict[str, float] | None = None
-    spnet_min_prune_age: int = 1
-    spnet_scale_ceiling_m: float | None = None
 
     def __post_init__(self) -> None:
         values = self.opacity_thresholds if self.opacity_thresholds is not None else {
@@ -253,13 +251,6 @@ class PruningConfig:
                 or any(not math.isfinite(value) or value < 0 for value in values.values())):
             raise ValueError("opacity_thresholds must define all sources with non-negative values")
         object.__setattr__(self, "opacity_thresholds", dict(values))
-        if type(self.spnet_min_prune_age) is not int or self.spnet_min_prune_age < 1:
-            raise ValueError("spnet_min_prune_age must be a positive integer")
-        if self.spnet_scale_ceiling_m is not None:
-            ceiling = float(self.spnet_scale_ceiling_m)
-            if not math.isfinite(ceiling) or ceiling <= 0:
-                raise ValueError("spnet_scale_ceiling_m must be finite and positive")
-            object.__setattr__(self, "spnet_scale_ceiling_m", ceiling)
 
 
 @dataclass(frozen=True)
@@ -403,11 +394,7 @@ class SageConfig:
                 residual_thresholds=residuals,
             ))
         if opacity != self.pruning.opacity_thresholds:
-            object.__setattr__(self, "pruning", PruningConfig(
-                opacity_thresholds=opacity,
-                spnet_min_prune_age=self.pruning.spnet_min_prune_age,
-                spnet_scale_ceiling_m=self.pruning.spnet_scale_ceiling_m,
-            ))
+            object.__setattr__(self, "pruning", PruningConfig(opacity_thresholds=opacity))
 
     def training_config_identity(self) -> str:
         """Digest of everything except the input.

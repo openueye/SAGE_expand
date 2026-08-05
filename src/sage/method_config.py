@@ -264,7 +264,7 @@ class SageMethodConfig:
         pruning = _section(
             self.mapping,
             "pruning",
-            {"opacity_thresholds", "spnet_min_prune_age", "spnet_scale_ceiling_m"},
+            {"opacity_thresholds"},
         )
         loss = _section(
             self.mapping,
