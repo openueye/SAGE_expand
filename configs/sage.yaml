@@ -61,19 +61,13 @@ mapping:
     min_candidate_depth_m: 0.1
     max_candidate_depth_m: 200.0
     candidate_duplicate_3d_threshold_m: 0.05
-    confidence_thresholds:
-      LIDAR_CENTER: 0.0
-      LIDAR_FUSED: 0.0
-      SPNET_COMPLETED: 0.0
+    confidence_thresholds: {LIDAR_CENTER: 0.0, LIDAR_FUSED: 0.0, SPNET_COMPLETED: 0.0}
     residual_thresholds:
       LIDAR_CENTER: {absolute_m: 0.15, relative: 0.03}
       LIDAR_FUSED: {absolute_m: 0.25, relative: 0.05}
       SPNET_COMPLETED: {absolute_m: 0.35, relative: 0.07}
   pruning:
-    opacity_thresholds:
-      LIDAR_CENTER: 0.03
-      LIDAR_FUSED: 0.05
-      SPNET_COMPLETED: 0.15
+    opacity_thresholds: {LIDAR_CENTER: 0.03, LIDAR_FUSED: 0.05, SPNET_COMPLETED: 0.15}
   loss:
     image_weight: 1.0
     ssim_weight: 0.2
