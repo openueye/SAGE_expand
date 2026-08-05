@@ -136,6 +136,11 @@ def preflight_appearance_runtime(
         raise ValueError(
             "Appearance refinement requires an available CUDA device"
         )
+    if not config.growth_sources.spnet.enabled:
+        raise ValueError(
+            "Appearance refinement requires spnet.enabled: its dense priors "
+            "are built from SPNet predictions; there is no SPNet-free path"
+        )
     renderer_identity = capture_renderer_identity()
     metric_evaluator = None
     provider = None
@@ -498,6 +503,11 @@ def run_appearance_refinement(
     if not str(device).startswith("cuda") or not torch.cuda.is_available():
         raise ValueError(
             "Appearance refinement requires an available CUDA device"
+        )
+    if not config.growth_sources.spnet.enabled:
+        raise ValueError(
+            "Appearance refinement requires spnet.enabled: its dense priors "
+            "are built from SPNet predictions; there is no SPNet-free path"
         )
     destination = Path(output).resolve()
     source_checkpoint = Path(checkpoint).resolve()

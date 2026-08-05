@@ -51,10 +51,12 @@ This workspace's model directory:
 relative to the config file's own directory (not the shell's cwd) — configs
 stored outside `00_Baselines/SAGE/configs` should use an absolute path.
 
-SPNet can be turned off entirely with `spnet.enabled: false` (no `model_id`
-needed). No weights are loaded and no source tree is verified; growth and
-pruning simply never see `SPNET_COMPLETED` evidence. Useful for a LiDAR-only
-run or a machine without SPNet weights.
+SPNet can be turned off for the mapping stage with `spnet.enabled: false` (no
+`model_id` needed): no weights are loaded and no source tree is verified;
+growth and pruning simply never see `SPNET_COMPLETED` evidence. Appearance
+refinement has no SPNet-free path — its dense geometry priors are built from
+SPNet predictions — so a `spnet.enabled: false` config fails fast at
+refinement preflight with a clear error rather than training end-to-end.
 
 ## Dataset and calibration layout
 
