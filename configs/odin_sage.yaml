@@ -20,6 +20,7 @@ input:
 
 spnet:
   model_id: spnet-large-300
+  enabled: true
 
 mapping:
   growth:
