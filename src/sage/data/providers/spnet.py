@@ -177,8 +177,8 @@ class SPNetIdentity:
     frame_grids: tuple[SPNetFrameGrid, ...] = ()
 
     def __post_init__(self) -> None:
-        if self.mode != "online":
-            raise ValueError("SPNet provider identity mode must be online")
+        if self.mode not in ("online", "disabled"):
+            raise ValueError("SPNet provider identity mode must be online or disabled")
         if not isinstance(self.source_id, str) or not self.source_id:
             raise ValueError("SPNet provider identity source_id must be non-empty")
         if self.adapter_policy != NATIVE_FULL_FRAME_PAD_CROP_V1:
@@ -225,6 +225,10 @@ class SPNetIdentity:
         *,
         actual_invocations: int,
     ) -> dict[str, object]:
+        if self.mode == "disabled":
+            if actual_invocations != 0:
+                raise ValueError("A disabled SPNet identity must have zero invocations")
+            return {"kind": "disabled", "source_id": self.source_id}
         required = (
             self.model_id,
             self.source_commit,
@@ -520,6 +524,24 @@ def _load_spnet_network(
     except Exception as exc:
         raise RuntimeError(f"SPNet checkpoint state is incompatible: {weights_path}") from exc
     return network.to(device=device, dtype=torch.float32).eval()
+
+
+class DisabledSPNetProvider:
+    """A no-op `SPNetEvidenceProvider` for `spnet.enabled: false` runs.
+
+    Loads no weights, verifies no source tree, and never yields evidence;
+    growth and pruning simply never see SPNET_COMPLETED candidates.
+    """
+
+    def __init__(self) -> None:
+        self._identity = SPNetIdentity(mode="disabled", source_id="disabled")
+
+    @property
+    def identity(self) -> SPNetIdentity:
+        return self._identity
+
+    def evidence_for(self, frame: MappingFrame) -> DepthEvidence | None:
+        return None
 
 
 class OnlineSPNetProvider:

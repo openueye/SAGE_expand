@@ -1,0 +1,38 @@
+seed: 0
+
+runtime:
+  model_root: ../../SAGE-models
+  require_clean_worktree: false
+  prefetch_depth: 4
+
+input:
+  type: rosbag2
+  execution: online-window-v2
+  rosbag: /home/haibo/Documents/Thesis/03_Datasets/001_Odin/Ferrari1
+  calibration: /home/haibo/Documents/Thesis/03_Datasets/001_Odin/calibration.yaml
+  allow_empty_image_frame_id: true
+  topics:
+    lidar: /odin1/cloud_slam
+    image: /odin1/image/compressed
+    odometry: /odin1/odometry
+  lidar:
+    points_frame: reference_frame
+
+spnet:
+  model_id: spnet-large-300
+  enabled: true
+
+mapping:
+  growth:
+    confidence_thresholds: {LIDAR_CENTER: 0.0, LIDAR_FUSED: 0.0, SPNET_COMPLETED: 0.0}
+  pruning: {}
+  loss: {}
+
+refinement: {}
+
+evaluation:
+  min_alpha: 0.01
+  epsilon: 0.000001
+  alpha_support: 0.01
+  hit_target_center: 0.5
+  hit_target_fused: 0.35

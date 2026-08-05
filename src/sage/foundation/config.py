@@ -84,7 +84,8 @@ class GrowthSourcesConfig:
 
 @dataclass(frozen=True)
 class SPNetOnlineConfig:
-    model_id: str
+    model_id: str = ""
+    enabled: bool = True
     adapter_policy: str | None = None
     depth_scale_m: float = 200.0
     confidence: float = 0.4
@@ -92,8 +93,12 @@ class SPNetOnlineConfig:
     mode: str = field(default="online", init=False)
 
     def __post_init__(self) -> None:
-        if not isinstance(self.model_id, str) or not self.model_id:
-            raise ValueError("SPNet model_id must be a non-empty logical identifier")
+        if type(self.enabled) is not bool:
+            raise ValueError("SPNet enabled must be a boolean")
+        if not isinstance(self.model_id, str):
+            raise ValueError("SPNet model_id must be a string")
+        if self.enabled and not self.model_id:
+            raise ValueError("SPNet model_id must be a non-empty logical identifier when enabled")
         if self.adapter_policy != NATIVE_FULL_FRAME_PAD_CROP_V1:
             raise ValueError("SPNet requires an explicit supported adapter_policy")
         if type(self.sample_stride) is not int or self.sample_stride < 1:
@@ -113,7 +118,7 @@ class SPNetOnlineConfig:
 
 @dataclass(frozen=True)
 class GaussianInitializationConfig:
-    opacity: float
+    opacity: float = 0.5
     scale_clamp_min: float = 1e-4
     initial_scale_anisotropy: tuple[float, float, float] = (0.95, 1.05, 1.20)
 
@@ -235,8 +240,6 @@ class GrowthConfig:
 @dataclass(frozen=True)
 class PruningConfig:
     opacity_thresholds: dict[str, float] | None = None
-    spnet_min_prune_age: int = 1
-    spnet_scale_ceiling_m: float | None = None
 
     def __post_init__(self) -> None:
         values = self.opacity_thresholds if self.opacity_thresholds is not None else {
@@ -253,13 +256,6 @@ class PruningConfig:
                 or any(not math.isfinite(value) or value < 0 for value in values.values())):
             raise ValueError("opacity_thresholds must define all sources with non-negative values")
         object.__setattr__(self, "opacity_thresholds", dict(values))
-        if type(self.spnet_min_prune_age) is not int or self.spnet_min_prune_age < 1:
-            raise ValueError("spnet_min_prune_age must be a positive integer")
-        if self.spnet_scale_ceiling_m is not None:
-            ceiling = float(self.spnet_scale_ceiling_m)
-            if not math.isfinite(ceiling) or ceiling <= 0:
-                raise ValueError("spnet_scale_ceiling_m must be finite and positive")
-            object.__setattr__(self, "spnet_scale_ceiling_m", ceiling)
 
 
 @dataclass(frozen=True)
@@ -267,7 +263,7 @@ class MappingLossConfig:
     variant: str = FROZEN_MAPPING_LOSS_VARIANT
     image_weight: float = 1.0
     ssim_weight: float = 0.2
-    depth_weight: float = 0.005
+    depth_weight: float = 0.25
     depth_coverage_weight: float = 0.05
     alpha_support_a0: float = 0.85
     depth_coverage_threshold: float = 0.85
@@ -313,11 +309,11 @@ class MappingLossConfig:
 @dataclass(frozen=True)
 class MappingConfig:
     frame_policy: str = ALL_ACCEPTED_FRAME_POLICY
-    map_every: int = 1
+    map_every: int = 5
     keyframe_every: int = 5
-    iterations: int = 60
-    prune_every: int = 20
-    prune_stop_after: int = 20
+    iterations: int = 90
+    prune_every: int = 30
+    prune_stop_after: int = 90
     learning_rates: dict[str, float] | None = None
     optimization_variant: str = GLOBAL_CURRENT_ANCHORED_VARIANT
     evaluation_depth_policy: str = ALPHA_NORMALIZED_DEPTH_POLICY
@@ -403,11 +399,7 @@ class SageConfig:
                 residual_thresholds=residuals,
             ))
         if opacity != self.pruning.opacity_thresholds:
-            object.__setattr__(self, "pruning", PruningConfig(
-                opacity_thresholds=opacity,
-                spnet_min_prune_age=self.pruning.spnet_min_prune_age,
-                spnet_scale_ceiling_m=self.pruning.spnet_scale_ceiling_m,
-            ))
+            object.__setattr__(self, "pruning", PruningConfig(opacity_thresholds=opacity))
 
     def training_config_identity(self) -> str:
         """Digest of everything except the input.

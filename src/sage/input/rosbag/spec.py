@@ -233,12 +233,20 @@ class RosbagInputSpec:
 
     @classmethod
     def from_payload(cls, payload: Mapping[str, Any], *, base_dir: Path) -> "RosbagInputSpec":
-        """Build from the config `input:` section; unknown keys are rejected."""
-        expected = {"type", "rosbag", "calibration", "topics", "lidar", "synchronization", "fusion", "depth"}
-        optional = {"frame_limit", "execution", "allow_empty_image_frame_id"}
-        if not isinstance(payload, Mapping) or not expected <= set(payload) <= expected | optional:
+        """Build from the config `input:` section; unknown keys are rejected.
+
+        `synchronization`, `fusion`, and `depth` may be omitted (or partially
+        specified) entirely: whatever is left out falls back to that spec
+        dataclass's own default, exactly as if it had been spelled out.
+        """
+        required = {"type", "rosbag", "calibration", "topics", "lidar"}
+        optional = {
+            "frame_limit", "execution", "allow_empty_image_frame_id",
+            "synchronization", "fusion", "depth",
+        }
+        if not isinstance(payload, Mapping) or not required <= set(payload) <= required | optional:
             raise ValueError(
-                "input (rosbag2) must define: " + ", ".join(sorted(expected))
+                "input (rosbag2) must define: " + ", ".join(sorted(required))
                 + "; optional: " + ", ".join(sorted(optional))
             )
         if payload["type"] != ADAPTER_TYPE:
@@ -247,29 +255,33 @@ class RosbagInputSpec:
         if not isinstance(topics, Mapping) or set(topics) != {"lidar", "image", "odometry"}:
             raise ValueError("input.topics must define exactly lidar, image and odometry")
         lidar = payload["lidar"]
-        if not isinstance(lidar, Mapping) or set(lidar) != {"points_frame", "enable_fused"}:
-            raise ValueError("input.lidar must define points_frame and enable_fused")
-        synchronization = payload["synchronization"]
+        if (
+            not isinstance(lidar, Mapping)
+            or "points_frame" not in lidar
+            or not set(lidar) <= {"points_frame", "enable_fused"}
+        ):
+            raise ValueError("input.lidar must define points_frame; enable_fused is optional")
+        synchronization = payload.get("synchronization", {})
         if (
             not isinstance(synchronization, Mapping)
-            or frozenset(synchronization) != _CONFIGURABLE_SYNCHRONIZATION_FIELDS
+            or not set(synchronization) <= _CONFIGURABLE_SYNCHRONIZATION_FIELDS
         ):
             raise ValueError(
-                "input.synchronization must define exactly: "
+                "input.synchronization fields must be a subset of: "
                 + ", ".join(sorted(_CONFIGURABLE_SYNCHRONIZATION_FIELDS))
             )
-        fusion = payload["fusion"]
+        fusion = payload.get("fusion", {})
         if (
             not isinstance(fusion, Mapping)
-            or not _CONFIGURABLE_FUSION_FIELDS <= frozenset(fusion)
-            or frozenset(fusion) - _CONFIGURABLE_FUSION_FIELDS - _OPTIONAL_FUSION_FIELDS
+            or not set(fusion) <= _CONFIGURABLE_FUSION_FIELDS | _OPTIONAL_FUSION_FIELDS
         ):
             raise ValueError(
-                "input.fusion must define: "
-                + ", ".join(sorted(_CONFIGURABLE_FUSION_FIELDS))
-                + "; optional: "
-                + ", ".join(sorted(_OPTIONAL_FUSION_FIELDS))
+                "input.fusion fields must be a subset of: "
+                + ", ".join(sorted(_CONFIGURABLE_FUSION_FIELDS | _OPTIONAL_FUSION_FIELDS))
             )
+        depth = payload.get("depth", {})
+        if not isinstance(depth, Mapping) or not set(depth) <= {"min_depth_m", "max_depth_m"}:
+            raise ValueError("input.depth fields must be a subset of: min_depth_m, max_depth_m")
         return cls(
             rosbag_path=_resolve(payload["rosbag"], base_dir),
             calibration_path=_resolve(payload["calibration"], base_dir),
@@ -277,15 +289,10 @@ class RosbagInputSpec:
             image_topic=str(topics["image"]),
             odometry_topic=str(topics["odometry"]),
             points_frame=str(lidar["points_frame"]),
-            enable_fused=bool(lidar["enable_fused"]),
+            enable_fused=bool(lidar.get("enable_fused", True)),
             synchronization=SynchronizationSpec(**dict(synchronization)),
-            fusion=FusionSpec(
-                **{
-                    **dict(fusion),
-                    "z_buffer": fusion.get("z_buffer", "median"),
-                },
-            ),
-            depth=DepthSpec(**dict(payload["depth"])),
+            fusion=FusionSpec(**dict(fusion)),
+            depth=DepthSpec(**dict(depth)),
             frame_limit=payload.get("frame_limit"),
             execution=str(payload.get("execution", EXECUTION_BATCH_V1)),
             allow_empty_image_frame_id=payload.get("allow_empty_image_frame_id", False),

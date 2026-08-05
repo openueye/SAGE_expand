@@ -1,10 +1,9 @@
 # SAGE Expand
 
 SAGE Expand is the thesis engineering variant of SAGE (Structure-Anchored
-Gaussian Enhancement). The complete training command reads a finite,
-calibrated ROS 2 bag, compiles it into canonical frames, builds a structure
-map, refines appearance, and evaluates the final map over every accepted
-frame.
+Gaussian Enhancement). The full training command reads a finite, calibrated
+ROS 2 bag, compiles it into canonical frames, builds a structure map, refines
+appearance, and evaluates the final map over every accepted frame.
 
 The normal thesis path is the `rosbag2` adapter. A Prepared Scene is an
 optional persisted replay of the same canonical input; it is not required for
@@ -12,10 +11,8 @@ training.
 
 ## Runtime and installation
 
-Use the dedicated `sage` environment for preflight, mapping, refinement, and
-evaluation. Do not use the unrelated `3dgs_train` environment for SAGE.
-
-From a clean checkout:
+Use the dedicated `sage` conda environment for preflight, mapping,
+refinement, and evaluation — never the unrelated `3dgs_train` environment.
 
 ```bash
 cd 00_Baselines/SAGE
@@ -23,16 +20,14 @@ conda-lock install --name sage conda-lock.yml
 conda run -n sage python tools/install_locked_pip.py --environment sage
 ```
 
-The first renderer invocation can compile the pinned `gsplat` CUDA extension.
-It therefore requires the locked CUDA compiler toolchain and can make the
-first preflight slower than subsequent runs. If a fixed architecture is
-needed, set `TORCH_CUDA_ARCH_LIST` before preflight; the run receipt records
-the value used.
+The first renderer invocation compiles the pinned `gsplat` CUDA extension, so
+it needs the locked CUDA toolchain and is slower than later runs. Set
+`TORCH_CUDA_ARCH_LIST` before preflight for a fixed architecture; the run
+receipt records the value used.
 
 ## Models
 
-SAGE requires the local SPNet source and the user-provided model artifacts.
-The repository's model manifest records the expected model identities.
+SAGE needs the local SPNet source and user-provided model weights.
 
 ```bash
 cd 00_Baselines/SAGE
@@ -44,201 +39,157 @@ python tools/download_models.py spnet-large-300 --source /path/to/Large_300.pth
 python tools/download_models.py alexnet-imagenet --source /path/to/alexnet-owt-7be5be79.pth
 ```
 
-For this thesis workspace the model directory is:
+This workspace's model directory:
 
 ```text
-/home/haibo/Documents/Thesis/00_Baselines/SAGE-models/
+00_Baselines/SAGE-models/
 ├── Large_300.pth
 └── alexnet-owt-7be5be79.pth
 ```
 
-`runtime.model_root` in the YAML configuration is authoritative when it is
-present. A relative model path is resolved relative to the configuration
-file, not relative to the current shell directory. Scene-specific configs
-stored outside `00_Baselines/SAGE/configs` should therefore use an absolute
-model path, or an explicitly correct relative path.
+`runtime.model_root` is authoritative when set in the config, and resolves
+relative to the config file's own directory (not the shell's cwd) — configs
+stored outside `00_Baselines/SAGE/configs` should use an absolute path.
+
+SPNet can be turned off for the mapping stage with `spnet.enabled: false` (no
+`model_id` needed): no weights are loaded and no source tree is verified;
+growth and pruning simply never see `SPNET_COMPLETED` evidence. Appearance
+refinement has no SPNet-free path — its dense geometry priors are built from
+SPNet predictions — so a `spnet.enabled: false` config fails fast at
+refinement preflight with a clear error rather than training end-to-end.
 
 ## Dataset and calibration layout
 
-Calibration belongs to the capture device or camera rig, not to an individual
-Scene. When several Scenes were recorded by the same device, keep one
-canonical calibration at the dataset-group root:
+Calibration belongs to the capture rig, not to an individual Scene. Recordings
+from the same rig share one canonical calibration at the dataset-group root:
 
 ```text
 03_Datasets/001_Odin/
 ├── calibration.yaml       # one canonical runtime calibration for this rig
-├── cam_in_ex.txt           # source calibration, if retained for provenance
-├── Downtown1/
+├── cam_in_ex.txt           # source calibration, kept for provenance
+├── Ferrari1/
 │   ├── metadata.yaml
 │   └── *.db3
-├── Ferrari1/
 ├── Graffiti1/
 └── ...
 ```
 
-Do not create a separate runtime calibration under every Scene when the
-device calibration is identical. A different device, camera, lens, output
-grid, or static transform gets its own dataset-group calibration.
-
-The canonical runtime adapter accepts SAGE's strict `calibration.yaml`
-schema. Odin supplies `cam_in_ex.txt`, so convert it once per device group:
+Don't duplicate a runtime calibration per Scene when the rig calibration is
+identical; a different device/camera/lens/output-grid gets its own
+dataset-group calibration. Convert Odin's `cam_in_ex.txt` once per rig:
 
 ```bash
-cd /home/haibo/Documents/Thesis/00_Baselines/SAGE
-
-conda run --no-capture-output -n sage \
-  python tools/convert_calibration.py \
-  --source /home/haibo/Documents/Thesis/03_Datasets/001_Odin/cam_in_ex.txt \
-  --output /home/haibo/Documents/Thesis/03_Datasets/001_Odin/calibration.yaml \
-  --reference-frame odom \
-  --pose-frame odin1_base_link \
-  --lidar-frame odin1_base_link \
-  --camera-frame camera \
+cd 00_Baselines/SAGE
+conda run --no-capture-output -n sage python tools/convert_calibration.py \
+  --source .../001_Odin/cam_in_ex.txt \
+  --output .../001_Odin/calibration.yaml \
+  --reference-frame odom --pose-frame odin1_base_link \
+  --lidar-frame odin1_base_link --camera-frame camera \
   --output-size 800 648 \
   --pose-from-lidar '[[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]]'
 ```
 
-For the Odin bags in this workspace, `/odin1/cloud_slam` is already
-registered in `odom`. Therefore its SAGE config declares
-`input.lidar.points_frame: reference_frame`, which prevents applying the pose
-chain to that point cloud a second time. A raw scan recorded in the LiDAR
-frame must use `lidar_frame` and the corresponding calibration contract
-instead.
+Odin's `/odin1/cloud_slam` is already registered into `odom`, so its configs
+declare `input.lidar.points_frame: reference_frame` to avoid applying the
+pose chain twice. A raw scan in the sensor's own frame must use `lidar_frame`
+(SAGE's default) with the matching calibration contract instead. Verify
+shared-calibration assumptions before reusing bytes across Scenes:
+`sha256sum 03_Datasets/001_Odin/*/cam_in_ex.txt`.
 
-Before sharing a calibration between Scenes, verify that the source
-calibration bytes and device-level assumptions are the same. For example:
+## Configuration
 
-```bash
-THESIS_ROOT=/home/haibo/Documents/Thesis
-sha256sum "${THESIS_ROOT}"/03_Datasets/001_Odin/*/cam_in_ex.txt
-```
+`configs/sage.yaml` is the single default reference config: every field is
+explicit, and it is the one config edited in place as the project's baseline
+evolves. Its `input:` section is a concrete Ferrari1 example, not a universal
+default — don't treat it as one.
 
-## Configuration identity
+`configs/odin_sage.yaml` is the terser, Odin-rig-scoped counterpart: it
+resolves to the exact same values, but any field that already equals the
+code's own default (in `GrowthConfig`, `PruningConfig`, `MappingLossConfig`,
+`AppearanceRefinementConfig`, `SynchronizationSpec`/`FusionSpec`/`DepthSpec`,
+...) is simply omitted rather than repeated. Only genuinely dataset-specific
+values (topics, `points_frame`, calibrated thresholds that differ from
+default) stay explicit. Use it as the template for a new Scene: copy it and
+change `input.rosbag`.
 
-`configs/sage.yaml` is the SAGE method baseline and currently points to the
-local Ferrari1 capture. It contains the mapping, refinement, evaluation, and
-ROSBAG synchronization settings. Its `input:` section is a concrete Scene
-example, so it should not be treated as a universal dataset default.
-
-For each Scene, create a separate run config derived from `configs/sage.yaml`
-and change only the input identity and any machine-local runtime paths. Do not
-edit a config after preflight or after training starts. The config is part of
-the run identity and its SHA-256 is recorded in the artifacts.
-
-For example, the Graffiti1 run config used in this workspace is:
-
-```text
-04_Outputs/SAGE/Odin/Graffiti1_sage.yaml
-```
-
-Its relevant fields are:
+For a per-Scene run config derived from either file, change only the input
+identity (and any machine-local runtime paths). **Never edit a config after
+preflight or after training starts** — it's part of the run identity, and its
+SHA-256 is recorded in the artifacts.
 
 ```yaml
-runtime:
-  model_root: /home/haibo/Documents/Thesis/00_Baselines/SAGE-models
-
+# 04_Outputs/SAGE/Odin/Graffiti1_sage.yaml
 input:
   type: rosbag2
-  rosbag: /home/haibo/Documents/Thesis/03_Datasets/001_Odin/Graffiti1
-  calibration: /home/haibo/Documents/Thesis/03_Datasets/001_Odin/calibration.yaml
-  topics:
-    lidar: /odin1/cloud_slam
-    image: /odin1/image/compressed
-    odometry: /odin1/odometry
-  lidar:
-    points_frame: reference_frame
-    enable_fused: true
+  rosbag: .../001_Odin/Graffiti1
+  calibration: .../001_Odin/calibration.yaml
+  topics: {lidar: /odin1/cloud_slam, image: /odin1/image/compressed, odometry: /odin1/odometry}
+  lidar: {points_frame: reference_frame}
 ```
 
-The full YAML remains strict: unknown fields and missing fields are rejected.
-The command line carries run control only; it does not override the bag,
-calibration, topics, or synchronization policy.
+The YAML is strict about what it accepts: unknown fields are always rejected,
+required fields must be present, and *optional* fields (documented per
+section in the source dataclasses) fall back to the code default when
+omitted — never to a silently different value. The CLI carries run control
+only; it never overrides the bag, calibration, topics, or synchronization
+policy.
 
 ### Online mapping and evaluation policy
 
-New runs can opt into a one-pass ROSBAG input by adding the explicit input
-execution revision below. The frozen baseline remains `batch-v1`; do not
-change an existing reproduction config in place.
+New runs may opt into one-pass ROSBAG input:
 
 ```yaml
 input:
   type: rosbag2
-  execution: online-window-v2
-  # rosbag, calibration, topics, lidar, synchronization, fusion, depth as above
-
-evaluation:
-  # Default when omitted: [stage2_refinement]
-  checkpoint_stages: [stage2_refinement]
+  execution: online-window-v2   # frozen baseline stays batch-v1; don't retro-change a reproduction config
 ```
 
-`online-window-v2` builds a compact header/row metadata index before mapping,
-sorts the index by effective header time, and keeps image/cloud payload reads
-inside the one canonical-frame pass. That pass performs effective-time
-synchronization, frame and PointCloud2-layout checks, projection checks, and
-the canonical sequence digest while Stage 1 maps. ROSBAG physical write order
-therefore does not need to match sensor header order; payloads remain on disk
-until their indexed event is consumed.
-
-Some legacy captures have an empty `sensor_msgs` image `Header.frame_id`. For
-those captures, `online-window-v2` supports the explicit compatibility option
-below. It accepts only an empty image frame ID; a non-empty ID that disagrees
-with calibration remains an error. The option is recorded in adapter
-provenance and is not available for the frozen `batch-v1` path.
+`online-window-v2` indexes header/row metadata first, sorts by effective
+header time, then keeps image/cloud payload reads inside one canonical-frame
+pass — so physical write order in the bag doesn't need to match sensor header
+order. For bags with an empty image `Header.frame_id`:
 
 ```yaml
 input:
   execution: online-window-v2
-  allow_empty_image_frame_id: true
+  allow_empty_image_frame_id: true   # only an empty frame ID is accepted; a wrong one still errors
 ```
 
-Stage 1 writes `.stage2-input-cache` beside `structure/`. This is a transient,
-identity-bound handoff containing only mapping frames; Stage 2 reads it with
-bounded CPU/GPU LRUs and never replays an online ROSBAG. The cache remains
-after a failed Stage 2 or Stage 3 attempt for retry, and is removed only after
-the complete three-stage pipeline publishes successfully.
+Stage 1 writes a transient `.stage2-input-cache` beside `structure/` (mapping
+frames only); Stage 2 reads it directly and never replays the bag. It
+survives a failed Stage 2/3 attempt for retry and is removed only once the
+full pipeline publishes successfully.
 
-To compare both checkpoints in one Stage 3 input pass, make the policy
-explicit:
+To get separate reports for both checkpoints in one Stage 3 pass:
 
 ```yaml
 evaluation:
-  min_alpha: 0.01
-  epsilon: 0.000001
-  alpha_support: 0.01
-  hit_target_center: 0.5
-  hit_target_fused: 0.35
-  checkpoint_stages: [stage1_mapping, stage2_refinement]
+  checkpoint_stages: [stage1_mapping, stage2_refinement]  # default: [stage2_refinement]
 ```
 
-This writes separate reports below `evaluation/stage1_mapping/` and
-`evaluation/stage2_refinement/`. Stage 1 reports are marked as mapping-only;
-the default final-quality report remains the refinement checkpoint.
+This writes `evaluation/stage1_mapping/` and `evaluation/stage2_refinement/`
+separately; the refinement checkpoint remains the default final-quality report.
 
 ## ROSBAG adapter contract
 
 The `rosbag2` adapter owns bag decoding, timestamp association, pose
 interpolation, image rectification, LiDAR projection, and centered-window
-fusion. The current baseline uses:
+fusion. Baseline policy:
 
-- image header stamps as the canonical frame anchors;
+- image header stamps as canonical frame anchors;
 - nearest LiDAR association within 20 ms;
-- linear-slerp pose interpolation with a maximum 100 ms pose gap and no
-  extrapolation;
-- a centered five-scan fusion window;
-- nearest-depth z-buffering and conflict rejection;
-- depth limits of 0.1 m to 200 m;
-- evaluation over all accepted canonical frames.
+- linear-slerp pose interpolation, 100 ms max pose gap, no extrapolation;
+- centered five-scan fusion window, nearest-depth z-buffering, conflict rejection;
+- depth limits 0.1 m–200 m; evaluation over every accepted canonical frame.
 
-The `batch-v1` adapter performs a full preflight before mapping. It checks the bag schema,
-declared topics, message types, frame IDs, synchronization plan, calibration,
-projection coverage, CUDA, renderer, SPNet, and metric dependencies.
+`batch-v1` runs a full preflight before mapping: bag schema, declared topics,
+message types, frame IDs, synchronization plan, calibration, projection
+coverage, CUDA, renderer, SPNet, and metric dependencies.
 
 ## Preflight and end-to-end training
 
-Run commands from the SAGE repository root. This is required by the formal
-fresh-process execution boundary and its execution receipt.
-
-Set the Scene-specific paths once:
+Run from the SAGE repository root — required by the fresh-process execution
+boundary and its receipt.
 
 ```bash
 export THESIS_ROOT=/home/haibo/Documents/Thesis
@@ -247,119 +198,79 @@ export SCENE_NAME=Graffiti1
 export DEVICE=cuda
 export CONFIG="${THESIS_ROOT}/04_Outputs/SAGE/Odin/${SCENE_NAME}_sage.yaml"
 export OUTPUT="${THESIS_ROOT}/04_Outputs/SAGE/Odin/${SCENE_NAME}"
-```
-
-Preflight does not start training and should be run against an unused output
-identity:
-
-```bash
 cd "${SAGE_ROOT}"
-
-conda run --no-capture-output -n sage \
-  python -m sage train \
-  --config "${CONFIG}" \
-  --output "${OUTPUT}" \
-  --device "${DEVICE}" \
-  --preflight
 ```
 
-After preflight succeeds, launch the complete three-stage run explicitly:
+Preflight against an unused output identity (does not start training):
 
 ```bash
-cd "${SAGE_ROOT}"
-
-conda run --no-capture-output -n sage \
-  python -m sage train \
-  --config "${CONFIG}" \
-  --output "${OUTPUT}" \
-  --device "${DEVICE}"
+conda run --no-capture-output -n sage python -m sage train \
+  --config "${CONFIG}" --output "${OUTPUT}" --device "${DEVICE}" --preflight
 ```
 
-The command runs, in order:
-
-1. structure mapping with the configured mapping iterations and pruning;
-2. appearance refinement with the configured refinement iterations;
-3. final evaluation over all accepted frames.
-
-There is no need to run a separate evaluation command for a normal complete
-training run. To publish a separate evaluation output later:
+Full run, once preflight succeeds — mapping, then refinement, then final
+evaluation, in one command:
 
 ```bash
-conda run --no-capture-output -n sage \
-  python -m sage evaluate \
+conda run --no-capture-output -n sage python -m sage train \
+  --config "${CONFIG}" --output "${OUTPUT}" --device "${DEVICE}"
+```
+
+To republish evaluation separately later:
+
+```bash
+conda run --no-capture-output -n sage python -m sage evaluate \
   --checkpoint "${OUTPUT}/final/appearance_checkpoint.pt" \
-  --config "${CONFIG}" \
-  --output "${OUTPUT}/evaluation_republished" \
-  --device "${DEVICE}"
+  --config "${CONFIG}" --output "${OUTPUT}/evaluation_republished" --device "${DEVICE}"
 ```
 
 ## Output layout
 
-For the Graffiti1 Scene, the output is explicitly namespaced below
-`04_Outputs/SAGE/Odin/Graffiti1/`:
-
 ```text
 04_Outputs/SAGE/Odin/Graffiti1/
-├── structure/
-│   ├── checkpoint.pt
-│   ├── map.ply
-│   ├── spnet_dense.pt
-│   └── run_manifest.json
+├── structure/{checkpoint.pt, map.ply, spnet_dense.pt, run_manifest.json}
 ├── structure.execution.json
-├── final/
-│   ├── appearance_checkpoint.pt
-│   ├── appearance_map.ply
-│   └── run_manifest.json
-├── evaluation/
-│   ├── evaluation.json
-│   └── run_manifest.json
+├── final/{appearance_checkpoint.pt, appearance_map.ply, run_manifest.json}
+├── evaluation/{evaluation.json, run_manifest.json}
 └── run_manifest.json
 ```
 
 `structure/spnet_dense.pt` is an identity- and manifest-bound cache of dense
-SPNet predictions computed during mapping. Appearance refinement reuses it.
+SPNet predictions from mapping, reused by refinement (absent when SPNet is
+disabled). Manifests record the fresh child process, exit code, wall time,
+peak RSS, formal config identity, artifact hashes, canonical sequence and
+input contract identities, adapter/source provenance, training identity,
+model identities, renderer identity, and worktree state.
 
-The structure execution receipt records the fresh child process, exit code,
-wall-clock time, peak RSS when available, formal config identity, and artifact
-hashes. Manifests also record the canonical sequence identity, canonical input
-contract, adapter/source provenance, training identity, model identities,
-renderer identity, and worktree state.
-
-Existing complete outputs are never silently overwritten. Use a new Scene/run
-directory for a new experiment; keep the config and output directory paired so
-the recorded identities remain auditable.
+Existing complete outputs are never silently overwritten — use a new
+Scene/run directory per experiment so recorded identities stay auditable.
 
 ## Prepared Scene (optional)
 
-Training does not export a Prepared Scene as a side effect. If a stable,
-replayable input artifact is needed, export it explicitly:
+Training doesn't export one as a side effect; export explicitly if a stable,
+replayable input artifact is needed:
 
 ```bash
-conda run --no-capture-output -n sage \
-  python -m sage prepare \
-  --config "${CONFIG}" \
-  --output /path/to/prepared-scene
+conda run --no-capture-output -n sage python -m sage prepare \
+  --config "${CONFIG}" --output /path/to/prepared-scene
 ```
 
-The exported Scene replays the same canonical frames and can be used by a
-separate config with `input.type: prepared_scene`. A ROSBAG run and its
-equivalent Prepared Scene share the canonical sequence identity, while their
-adapter provenance remains distinguishable.
+A separate config can then use `input.type: prepared_scene`. The ROSBAG run
+and its Prepared Scene share the canonical sequence identity; adapter
+provenance stays distinguishable.
 
 ## Common failure points
 
-- `calibration.yaml` not found: create the device-level file once with
-  `tools/convert_calibration.py` and point every Scene config to it.
-- Frame-ID mismatch: inspect the bag's odometry and point-cloud header frame
-  IDs, then correct the calibration contract or `points_frame`; do not disable
-  the check.
-- No projected LiDAR coverage: verify the direct `Tcl_0` /`camera_from_lidar`
-  convention, camera output grid, point-frame declaration, and calibration
-  units.
+- `calibration.yaml` missing: create it once with `tools/convert_calibration.py`
+  and point every Scene config at it.
+- Frame-ID mismatch: check the bag's odometry/point-cloud header frame IDs,
+  fix the calibration contract or `points_frame` — don't disable the check.
+- No projected LiDAR coverage: verify `Tcl_0`/`camera_from_lidar`, camera
+  output grid, point-frame declaration, and calibration units.
 - Missing models or renderer errors: run preflight in `sage` and check
   `runtime.model_root`, `third_party/SPNet`, and the locked CUDA toolchain.
-- Existing output refusal: choose a new Scene/run output identity instead of
-  deleting or overwriting an auditable run.
+- Existing output refusal: pick a new Scene/run output identity — don't
+  delete or overwrite an auditable run.
 
 SAGE targets finite, calibrated research scenes. It is not a real-time ROS 2
 or safety-critical navigation system.

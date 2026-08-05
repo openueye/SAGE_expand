@@ -23,7 +23,7 @@ class SourceDescriptor:
 SOURCE_DESCRIPTORS = (
     SourceDescriptor("LIDAR_CENTER", SourceType.LIDAR_CENTER, 1.0, 0.0, 0.03, 0),
     SourceDescriptor("LIDAR_FUSED", SourceType.LIDAR_FUSED, 0.7, 0.5, 0.05, 1),
-    SourceDescriptor("SPNET_COMPLETED", SourceType.SPNET_COMPLETED, 0.4, 0.25, 0.10, 2),
+    SourceDescriptor("SPNET_COMPLETED", SourceType.SPNET_COMPLETED, 0.4, 0.25, 0.15, 2),
 )
 SOURCE_NAMES = tuple(descriptor.name for descriptor in SOURCE_DESCRIPTORS)
 ALL_SOURCE_DESCRIPTORS = SOURCE_DESCRIPTORS

@@ -94,6 +94,12 @@ def execution_preflight(config: object, *, device: str = "cuda") -> dict[str, ob
         ))
     ):
         raise RuntimeError("CUDA renderer preflight returned an invalid output")
+    if not config.growth_sources.spnet.enabled:
+        return {
+            "renderer_output_shape": [height, width],
+            "spnet_output_shape": None,
+            "spnet_model_id": None,
+        }
     spnet = OnlineSPNetProvider(
         config.growth_sources.spnet,
         device=device,

@@ -85,28 +85,28 @@ def _finite_number(
 @dataclass(frozen=True)
 class AppearanceRefinementConfig:
     schema_version: str
-    iterations: int
     seed: int
     sampling_variant: str
-    color_learning_rate: float
-    opacity_learning_rate: float
-    means3d_learning_rate: float
-    log_scales_learning_rate: float
-    rotations_learning_rate: float
-    opacity_anchor_weight: float
-    lidar_depth_weight: float
-    dense_normal_weight: float
-    dense_normal_edge_weight_gamma: float
-    dense_normal_alpha_support_a0: float
-    dense_normal_max_relative_depth_jump: float
-    dense_prior: DensePriorPolicy
-    exposure_learning_rate: float
-    exposure_log_gain_bound: float
-    exposure_bias_bound: float
-    exposure_anchor_weight: float
     exposure_gauge_variant: str
-    ssim_weight: float
-    milestone_steps: tuple[int, ...]
+    iterations: int = 4000
+    color_learning_rate: float = 0.000625
+    opacity_learning_rate: float = 0.0000625
+    means3d_learning_rate: float = 0.000016
+    log_scales_learning_rate: float = 0.0001
+    rotations_learning_rate: float = 0.0001
+    opacity_anchor_weight: float = 0.1
+    lidar_depth_weight: float = 0.25
+    dense_normal_weight: float = 0.05
+    dense_normal_edge_weight_gamma: float = 10.0
+    dense_normal_alpha_support_a0: float = 0.85
+    dense_normal_max_relative_depth_jump: float = 0.05
+    dense_prior: DensePriorPolicy = DensePriorPolicy()
+    exposure_learning_rate: float = 0.01
+    exposure_log_gain_bound: float = 0.5
+    exposure_bias_bound: float = 0.25
+    exposure_anchor_weight: float = 10.0
+    ssim_weight: float = 0.2
+    milestone_steps: tuple[int, ...] = (1000, 2000, 4000)
 
     def __post_init__(self) -> None:
         if self.schema_version != APPEARANCE_REFINEMENT_SCHEMA:
